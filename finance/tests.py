@@ -6,7 +6,16 @@ from django.core.exceptions import ValidationError
 from django.test import TestCase
 from django.urls import reverse
 
-from .models import Account, Budget, Category, CompanySettings, Loan, Transaction
+from .models import (
+    Account,
+    Budget,
+    Category,
+    CompanySettings,
+    Loan,
+    PersonalCategory,
+    PersonalTransaction,
+    Transaction,
+)
 from .services import (
     EMI_DUE,
     STATUS_FULL,
@@ -22,6 +31,8 @@ from .services import (
     expenses_by_category,
     income_expense_totals,
     loan_status,
+    personal_by_category,
+    personal_totals,
     record_emi_payment,
 )
 
@@ -560,3 +571,130 @@ class ReportConsistencyTests(FinanceBaseTestCase):
         csv_response = self.client.get(reverse("finance:reports") + "?year=2026&month=10&export=csv&report=income")
         self.assertEqual(csv_response.status_code, 200)
         self.assertIn(b"15000", csv_response.content)
+
+
+class PersonalTests(FinanceBaseTestCase):
+    def setUp(self):
+        super().setUp()
+        self.p_food, _ = PersonalCategory.objects.get_or_create(name="Food & Dining", category_type=Category.EXPENSE)
+        self.p_medical, _ = PersonalCategory.objects.get_or_create(name="Medical", category_type=Category.EXPENSE)
+        self.p_salary, _ = PersonalCategory.objects.get_or_create(
+            name="Salary / Drawings", category_type=Category.INCOME
+        )
+
+    def add_personal(self, **kwargs):
+        defaults = {
+            "date": date(2026, 10, 7),
+            "entry_type": Transaction.DEBIT,
+            "amount": Decimal("500.00"),
+            "category": self.p_food,
+            "payment_mode": PersonalTransaction.UPI,
+            "description": "Dinner",
+        }
+        defaults.update(kwargs)
+        txn = PersonalTransaction(**defaults)
+        txn.full_clean()
+        txn.save()
+        return txn
+
+    def test_default_categories_seeded_by_migration(self):
+        self.assertTrue(PersonalCategory.objects.filter(name="Groceries", category_type=Category.EXPENSE).exists())
+
+    def test_category_must_match_entry_type(self):
+        with self.assertRaises(ValidationError):
+            self.add_personal(category=self.p_salary)
+        with self.assertRaises(ValidationError):
+            self.add_personal(entry_type=Transaction.CREDIT, category=self.p_food)
+        with self.assertRaises(ValidationError):
+            self.add_personal(amount=Decimal("0"))
+
+    def test_totals_and_by_category(self):
+        self.add_personal(amount=Decimal("500"))
+        self.add_personal(amount=Decimal("1500"), category=self.p_medical)
+        self.add_personal(entry_type=Transaction.CREDIT, amount=Decimal("40000"), category=self.p_salary)
+        self.add_personal(amount=Decimal("999"), date=date(2026, 9, 30))
+        totals = personal_totals(2026, 10)
+        self.assertEqual(totals["income"], Decimal("40000.00"))
+        self.assertEqual(totals["expenses"], Decimal("2000.00"))
+        self.assertEqual(totals["net"], Decimal("38000.00"))
+        rows = personal_by_category(2026, 10)
+        self.assertEqual([r["category"] for r in rows], ["Medical", "Food & Dining"])
+        self.assertEqual(rows[0]["share"], Decimal("75.0"))
+
+    def test_personal_entries_do_not_touch_company_figures(self):
+        self.add_txn(amount=Decimal("2500"))
+        before = (income_expense_totals(2026, 10), account_balance(self.sbi), budget_vs_actual(2026, 10)["total_actual"])
+        self.add_personal(amount=Decimal("5000"))
+        self.add_personal(entry_type=Transaction.CREDIT, amount=Decimal("40000"), category=self.p_salary)
+        after = (income_expense_totals(2026, 10), account_balance(self.sbi), budget_vs_actual(2026, 10)["total_actual"])
+        self.assertEqual(before, after)
+
+    def test_views_require_login(self):
+        response = self.client.get(reverse("finance:personal_dashboard"))
+        self.assertEqual(response.status_code, 302)
+        self.assertIn(reverse("login"), response["Location"])
+
+    def test_crud_views(self):
+        self.login()
+        self.client.get(reverse("finance:dashboard") + "?year=2026&month=10")
+        response = self.client.post(
+            reverse("finance:personal_transaction_create"),
+            {
+                "date": "2026-10-10",
+                "entry_type": Transaction.DEBIT,
+                "amount": "750",
+                "category": self.p_food.pk,
+                "payment_mode": PersonalTransaction.CASH,
+                "description": "Groceries run",
+            },
+        )
+        self.assertRedirects(response, reverse("finance:personal_transaction_list"))
+        txn = PersonalTransaction.objects.get(description="Groceries run")
+
+        bad = self.client.post(
+            reverse("finance:personal_transaction_create"),
+            {
+                "date": "2026-10-10",
+                "entry_type": Transaction.CREDIT,
+                "amount": "750",
+                "category": self.p_food.pk,
+                "payment_mode": PersonalTransaction.CASH,
+                "description": "Wrong",
+            },
+        )
+        self.assertEqual(bad.status_code, 200)
+        self.assertFalse(PersonalTransaction.objects.filter(description="Wrong").exists())
+
+        dash = self.client.get(reverse("finance:personal_dashboard"))
+        self.assertContains(dash, "₹750.00")
+        listing = self.client.get(reverse("finance:personal_transaction_list"))
+        self.assertContains(listing, "Groceries run")
+        csv_response = self.client.get(reverse("finance:personal_transaction_list") + "?export=csv")
+        self.assertIn(b"Groceries run", csv_response.content)
+
+        self.client.post(
+            reverse("finance:personal_transaction_edit", args=[txn.pk]),
+            {
+                "date": "2026-10-10",
+                "entry_type": Transaction.DEBIT,
+                "amount": "800",
+                "category": self.p_food.pk,
+                "payment_mode": PersonalTransaction.CARD,
+                "description": "Groceries run",
+            },
+        )
+        txn.refresh_from_db()
+        self.assertEqual(txn.amount, Decimal("800.00"))
+
+        self.client.post(reverse("finance:personal_category_delete", args=[self.p_food.pk]))
+        self.p_food.refresh_from_db()
+        self.assertFalse(self.p_food.is_active)
+
+        self.client.post(reverse("finance:personal_transaction_delete", args=[txn.pk]))
+        self.assertFalse(PersonalTransaction.objects.filter(pk=txn.pk).exists())
+
+        self.client.post(reverse("finance:personal_category_delete", args=[self.p_medical.pk]))
+        self.assertFalse(PersonalCategory.objects.filter(pk=self.p_medical.pk).exists())
+
+        for name in ["personal_category_list", "personal_category_create", "personal_transaction_create"]:
+            self.assertEqual(self.client.get(reverse(f"finance:{name}")).status_code, 200)

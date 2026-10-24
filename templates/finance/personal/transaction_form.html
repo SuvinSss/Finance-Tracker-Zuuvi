@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}{{ title }}{% endblock %}
+{% block heading %}{{ title }}{% endblock %}
+{% block subtitle %}Personal entries stay out of company income, expenses, balances, and budgets.{% endblock %}
+{% block period %}{% endblock %}
+
+{% block content %}
+<div class="card card-soft p-4" style="max-width: 760px;">
+  <form method="post" novalidate>
+    {% csrf_token %}
+    {{ form.non_field_errors }}
+    {% for field in form %}
+      <div class="mb-3">
+        <label class="form-label" for="{{ field.id_for_label }}">{{ field.label }}</label>
+        {{ field }}
+        {% if field.help_text %}<div class="form-text">{{ field.help_text }}</div>{% endif %}
+        {% if field.errors %}<div class="text-danger small">{{ field.errors }}</div>{% endif %}
+      </div>
+    {% endfor %}
+    <button class="btn btn-primary" type="submit">Save</button>
+    {% if not txn %}<button class="btn btn-outline-primary" type="submit" name="save_add" value="1">Save &amp; add another</button>{% endif %}
+    <a class="btn btn-outline-secondary" href="{% url 'finance:personal_transaction_list' %}">Cancel</a>
+  </form>
+</div>
+{% endblock %}

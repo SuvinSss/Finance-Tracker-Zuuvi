@@ -5,7 +5,7 @@ from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.views import LoginView, LogoutView
 from django.core.paginator import Paginator
-from django.db.models import Q
+from django.db.models import Q, Sum
 from django.http import Http404, HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse_lazy
@@ -18,13 +18,24 @@ from .forms import (
     CategoryForm,
     EmiPaymentForm,
     LoanForm,
+    PersonalCategoryForm,
+    PersonalTransactionForm,
     SettingsForm,
     StyledAuthenticationForm,
     TransactionForm,
     TransferForm,
 )
-from .models import Account, Budget, Category, CompanySettings, Loan, Transaction
-from .money import ZERO
+from .models import (
+    Account,
+    Budget,
+    Category,
+    CompanySettings,
+    Loan,
+    PersonalCategory,
+    PersonalTransaction,
+    Transaction,
+)
+from .money import ZERO, as_money
 from .period import get_selected_period, month_name
 from .services import (
     account_movement,
@@ -38,6 +49,9 @@ from .services import (
     loan_status,
     monthly_summaries,
     next_month_run_estimate,
+    personal_by_category,
+    personal_monthly_trend,
+    personal_totals,
     record_emi_payment,
     total_account_balance,
     transfer_legs,
@@ -614,3 +628,192 @@ def settings_view(request):
         messages.success(request, "Settings saved.")
         return redirect("finance:settings")
     return render(request, "finance/settings.html", {"form": form})
+
+
+@login_required
+def personal_dashboard(request):
+    year, month = get_selected_period(request)
+    trend = personal_monthly_trend(year)
+    by_cat = personal_by_category(year, month)
+    return render(
+        request,
+        "finance/personal/dashboard.html",
+        {
+            "month_label": f"{month_name(month)} {year}",
+            "year": year,
+            "totals": personal_totals(year, month),
+            "year_totals": personal_totals(year),
+            "by_cat": by_cat,
+            "income_by_cat": personal_by_category(year, month, entry_type=Transaction.CREDIT),
+            "recent": PersonalTransaction.objects.select_related("category")[:10],
+            "chart": {
+                "cat_labels": [row["category"] for row in by_cat],
+                "cat_values": [str(row["total"]) for row in by_cat],
+                "months": [row["month_name"][:3] for row in trend],
+                "income": [str(row["income"]) for row in trend],
+                "expenses": [str(row["expenses"]) for row in trend],
+            },
+        },
+    )
+
+
+@login_required
+def personal_transaction_list(request):
+    qs = PersonalTransaction.objects.select_related("category")
+    q = request.GET.get("q", "").strip()
+    entry_type = request.GET.get("entry_type", "")
+    category_id = request.GET.get("category", "")
+    payment_mode = request.GET.get("payment_mode", "")
+    start = request.GET.get("start", "")
+    end = request.GET.get("end", "")
+    sort = request.GET.get("sort", "-date")
+    year, month = get_selected_period(request)
+
+    if start:
+        qs = qs.filter(date__gte=start)
+    if end:
+        qs = qs.filter(date__lte=end)
+    if not start and not end and request.GET.get("all") != "1":
+        qs = qs.filter(date__year=year, date__month=month)
+
+    if q:
+        qs = qs.filter(Q(description__icontains=q) | Q(notes__icontains=q))
+    if entry_type in {Transaction.DEBIT, Transaction.CREDIT}:
+        qs = qs.filter(entry_type=entry_type)
+    if category_id:
+        qs = qs.filter(category_id=category_id)
+    if payment_mode:
+        qs = qs.filter(payment_mode=payment_mode)
+
+    allowed_sorts = {"date", "-date", "amount", "-amount", "description", "-description"}
+    qs = qs.order_by(sort if sort in allowed_sorts else "-date", "-id")
+
+    if request.GET.get("export") == "csv":
+        return _csv_response(
+            "personal-transactions.csv",
+            ["Date", "Type", "Category", "Payment mode", "Description", "Amount", "Notes"],
+            [
+                [
+                    txn.date,
+                    "Income" if txn.entry_type == Transaction.CREDIT else "Expense",
+                    txn.category.name,
+                    txn.get_payment_mode_display(),
+                    txn.description,
+                    txn.amount,
+                    txn.notes,
+                ]
+                for txn in qs
+            ],
+        )
+
+    totals = qs.aggregate(
+        income=Sum("amount", filter=Q(entry_type=Transaction.CREDIT)),
+        expenses=Sum("amount", filter=Q(entry_type=Transaction.DEBIT)),
+    )
+    paginator = Paginator(qs, 20)
+    page = paginator.get_page(request.GET.get("page"))
+    params = request.GET.copy()
+    params.pop("page", None)
+    params.pop("export", None)
+    return render(
+        request,
+        "finance/personal/transaction_list.html",
+        {
+            "page": page,
+            "q": q,
+            "entry_type": entry_type,
+            "category_id": category_id,
+            "payment_mode": payment_mode,
+            "start": start,
+            "end": end,
+            "sort": sort,
+            "categories": PersonalCategory.objects.filter(is_active=True),
+            "payment_modes": PersonalTransaction.PAYMENT_MODE_CHOICES,
+            "showing_all": request.GET.get("all") == "1",
+            "filtered_income": as_money(totals["income"]),
+            "filtered_expenses": as_money(totals["expenses"]),
+            "querystring": params.urlencode(),
+        },
+    )
+
+
+@login_required
+def personal_transaction_create(request):
+    initial = {"date": timezone.localdate(), "entry_type": Transaction.DEBIT}
+    form = PersonalTransactionForm(request.POST or None, initial=initial)
+    if request.method == "POST" and form.is_valid():
+        form.save()
+        messages.success(request, "Personal entry saved.")
+        if "save_add" in request.POST:
+            return redirect("finance:personal_transaction_create")
+        return redirect("finance:personal_transaction_list")
+    return render(request, "finance/personal/transaction_form.html", {"form": form, "title": "Add personal entry"})
+
+
+@login_required
+def personal_transaction_edit(request, pk):
+    txn = get_object_or_404(PersonalTransaction, pk=pk)
+    form = PersonalTransactionForm(request.POST or None, instance=txn)
+    if request.method == "POST" and form.is_valid():
+        form.save()
+        messages.success(request, "Personal entry updated.")
+        return redirect("finance:personal_transaction_list")
+    return render(
+        request,
+        "finance/personal/transaction_form.html",
+        {"form": form, "title": "Edit personal entry", "txn": txn},
+    )
+
+
+@login_required
+def personal_transaction_delete(request, pk):
+    txn = get_object_or_404(PersonalTransaction, pk=pk)
+    if request.method == "POST":
+        txn.delete()
+        messages.success(request, "Personal entry deleted.")
+        return redirect("finance:personal_transaction_list")
+    return render(request, "finance/confirm_delete.html", {"object": txn, "object_type": "personal entry"})
+
+
+@login_required
+def personal_category_list(request):
+    return render(
+        request,
+        "finance/personal/category_list.html",
+        {"categories": PersonalCategory.objects.all()},
+    )
+
+
+@login_required
+def personal_category_create(request):
+    form = PersonalCategoryForm(request.POST or None)
+    if request.method == "POST" and form.is_valid():
+        form.save()
+        messages.success(request, "Personal category created.")
+        return redirect("finance:personal_category_list")
+    return render(request, "finance/personal/category_form.html", {"form": form, "title": "Add personal category"})
+
+
+@login_required
+def personal_category_edit(request, pk):
+    category = get_object_or_404(PersonalCategory, pk=pk)
+    form = PersonalCategoryForm(request.POST or None, instance=category)
+    if request.method == "POST" and form.is_valid():
+        form.save()
+        messages.success(request, "Personal category updated.")
+        return redirect("finance:personal_category_list")
+    return render(request, "finance/personal/category_form.html", {"form": form, "title": "Edit personal category"})
+
+
+@login_required
+@require_POST
+def personal_category_delete(request, pk):
+    category = get_object_or_404(PersonalCategory, pk=pk)
+    if category.is_in_use():
+        category.is_active = False
+        category.save(update_fields=["is_active"])
+        messages.warning(request, "This category has entries, so it was deactivated instead of deleted.")
+        return redirect("finance:personal_category_list")
+    category.delete()
+    messages.success(request, "Personal category deleted.")
+    return redirect("finance:personal_category_list")

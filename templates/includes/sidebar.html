@@ -3,16 +3,23 @@
     {{ company.company_name|default:"Zuuvi" }}
     <small>Budget &amp; transactions</small>
   </div>
+  {% with url_name=request.resolver_match.url_name|default:"" %}
   <nav class="nav flex-column px-2">
-    <a class="nav-link {% if request.resolver_match.url_name == 'dashboard' %}active{% endif %}" href="{% url 'finance:dashboard' %}">Dashboard</a>
-    <a class="nav-link {% if 'transaction' in request.resolver_match.url_name or 'transfer' in request.resolver_match.url_name %}active{% endif %}" href="{% url 'finance:transaction_list' %}">Transactions</a>
-    <a class="nav-link {% if 'budget' in request.resolver_match.url_name %}active{% endif %}" href="{% url 'finance:budget_list' %}">Budgets</a>
-    <a class="nav-link {% if 'account' in request.resolver_match.url_name %}active{% endif %}" href="{% url 'finance:account_list' %}">Bank Accounts</a>
-    <a class="nav-link {% if 'loan' in request.resolver_match.url_name or 'emi' in request.resolver_match.url_name %}active{% endif %}" href="{% url 'finance:loan_list' %}">Loans &amp; EMI</a>
-    <a class="nav-link {% if 'category' in request.resolver_match.url_name %}active{% endif %}" href="{% url 'finance:category_list' %}">Categories</a>
-    <a class="nav-link {% if request.resolver_match.url_name == 'reports' %}active{% endif %}" href="{% url 'finance:reports' %}">Reports</a>
-    <a class="nav-link {% if request.resolver_match.url_name == 'settings' %}active{% endif %}" href="{% url 'finance:settings' %}">Settings</a>
+    <a class="nav-link {% if url_name == 'dashboard' %}active{% endif %}" href="{% url 'finance:dashboard' %}">Dashboard</a>
+    <a class="nav-link {% if 'personal' not in url_name %}{% if 'transaction' in url_name or 'transfer' in url_name %}active{% endif %}{% endif %}" href="{% url 'finance:transaction_list' %}">Transactions</a>
+    <a class="nav-link {% if 'budget' in url_name %}active{% endif %}" href="{% url 'finance:budget_list' %}">Budgets</a>
+    <a class="nav-link {% if 'account' in url_name %}active{% endif %}" href="{% url 'finance:account_list' %}">Bank Accounts</a>
+    <a class="nav-link {% if 'loan' in url_name or 'emi' in url_name %}active{% endif %}" href="{% url 'finance:loan_list' %}">Loans &amp; EMI</a>
+    <a class="nav-link {% if 'personal' not in url_name and 'category' in url_name %}active{% endif %}" href="{% url 'finance:category_list' %}">Categories</a>
+    <a class="nav-link {% if url_name == 'reports' %}active{% endif %}" href="{% url 'finance:reports' %}">Reports</a>
+    <a class="nav-link {% if url_name == 'settings' %}active{% endif %}" href="{% url 'finance:settings' %}">Settings</a>
+
+    <div class="nav-section">Personal</div>
+    <a class="nav-link {% if url_name == 'personal_dashboard' %}active{% endif %}" href="{% url 'finance:personal_dashboard' %}">Personal Dashboard</a>
+    <a class="nav-link {% if 'personal' in url_name and 'transaction' in url_name %}active{% endif %}" href="{% url 'finance:personal_transaction_list' %}">Personal Transactions</a>
+    <a class="nav-link {% if 'personal' in url_name and 'category' in url_name %}active{% endif %}" href="{% url 'finance:personal_category_list' %}">Personal Categories</a>
   </nav>
+  {% endwith %}
   <form class="logout-form" method="post" action="{% url 'logout' %}">
     {% csrf_token %}
     <button class="btn btn-outline-light w-100 btn-sm" type="submit">Logout</button>

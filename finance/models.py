@@ -303,6 +303,84 @@ class Transaction(models.Model):
             )
 
 
+class PersonalCategory(models.Model):
+    name = models.CharField(max_length=100)
+    category_type = models.CharField(max_length=10, choices=Category.TYPE_CHOICES)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["category_type", "name"]
+        verbose_name_plural = "Personal categories"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["name", "category_type"],
+                name="unique_personal_category_name_type",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.name} ({self.get_category_type_display()})"
+
+    def is_in_use(self):
+        return self.transactions.exists()
+
+
+class PersonalTransaction(models.Model):
+    """Owner's personal income/expense entry. Kept apart from company accounts, budgets and reports."""
+
+    CASH = "cash"
+    UPI = "upi"
+    CARD = "card"
+    BANK = "bank"
+    PAYMENT_MODE_CHOICES = [
+        (CASH, "Cash"),
+        (UPI, "UPI"),
+        (CARD, "Card"),
+        (BANK, "Bank transfer"),
+    ]
+
+    date = models.DateField()
+    entry_type = models.CharField(
+        max_length=10,
+        choices=[(Transaction.DEBIT, "Expense (money out)"), (Transaction.CREDIT, "Income (money in)")],
+    )
+    amount = models.DecimalField(
+        max_digits=14,
+        decimal_places=2,
+        validators=[MinValueValidator(Decimal("0.01"))],
+    )
+    category = models.ForeignKey(
+        PersonalCategory,
+        on_delete=models.PROTECT,
+        related_name="transactions",
+    )
+    payment_mode = models.CharField(max_length=10, choices=PAYMENT_MODE_CHOICES, default=UPI)
+    description = models.CharField(max_length=255)
+    notes = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-date", "-id"]
+        constraints = [
+            models.CheckConstraint(condition=Q(amount__gt=0), name="personal_txn_amount_positive"),
+        ]
+
+    def __str__(self):
+        return f"{self.date} {self.entry_type} {self.amount} {self.description}"
+
+    def clean(self):
+        if self.amount is not None and self.amount <= 0:
+            raise ValidationError({"amount": "Amount must be greater than zero."})
+        if not self.category_id:
+            return
+        category = self.category
+        if self.entry_type == Transaction.DEBIT and category.category_type != Category.EXPENSE:
+            raise ValidationError({"category": "Expenses must use an expense category."})
+        if self.entry_type == Transaction.CREDIT and category.category_type != Category.INCOME:
+            raise ValidationError({"category": "Income must use an income category."})
+
+
 class Budget(models.Model):
     year = models.PositiveIntegerField()
     month = models.PositiveSmallIntegerField()

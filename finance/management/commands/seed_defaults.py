@@ -2,7 +2,7 @@ from datetime import date
 
 from django.core.management.base import BaseCommand
 
-from finance.models import Account, Category, CompanySettings
+from finance.models import Account, Category, CompanySettings, PersonalCategory
 
 
 EXPENSE_CATEGORIES = [
@@ -32,6 +32,13 @@ INCOME_CATEGORIES = [
     ("Other Income", "Other business income"),
 ]
 
+PERSONAL_EXPENSE_CATEGORIES = [
+    "Food & Dining", "Groceries", "Fuel & Transport", "Rent", "Utilities & Bills", "Shopping",
+    "Medical", "Entertainment", "Education", "Travel", "Family", "Miscellaneous",
+]
+
+PERSONAL_INCOME_CATEGORIES = ["Salary / Drawings", "Interest", "Gifts", "Other Income"]
+
 
 class Command(BaseCommand):
     help = "Create default company settings, categories, and sample accounts if they do not exist."
@@ -53,6 +60,13 @@ class Command(BaseCommand):
                 defaults={"description": description, "is_active": True},
             )
             created_cats += int(created)
+        for names, category_type in (
+            (PERSONAL_EXPENSE_CATEGORIES, Category.EXPENSE),
+            (PERSONAL_INCOME_CATEGORIES, Category.INCOME),
+        ):
+            for name in names:
+                _, created = PersonalCategory.objects.get_or_create(name=name, category_type=category_type)
+                created_cats += int(created)
 
         sample_accounts = [
             ("SBI Current Account", Account.BANK, "State Bank of India"),

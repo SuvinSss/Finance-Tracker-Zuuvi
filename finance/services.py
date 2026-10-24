@@ -6,7 +6,7 @@ from django.db import transaction
 from django.db.models import Sum
 from django.utils import timezone
 
-from .models import Account, Budget, Category, CompanySettings, Loan, Transaction
+from .models import Account, Budget, Category, CompanySettings, Loan, PersonalTransaction, Transaction
 from .money import ZERO, as_money
 from .period import month_bounds, month_name
 
@@ -421,6 +421,45 @@ def record_emi_payment(*, loan: Loan, emi_month: date, date, amount, account: Ac
     txn.full_clean()
     txn.save()
     return txn
+
+
+# --- Personal (owner) finances: separate from company figures -----------------
+
+
+def personal_totals(year=None, month=None, start=None, end=None) -> dict:
+    qs = filter_by_period(PersonalTransaction.objects.all(), year, month, start, end)
+    income = _sum(qs, entry_type=Transaction.CREDIT)
+    expenses = _sum(qs, entry_type=Transaction.DEBIT)
+    return {"income": income, "expenses": expenses, "net": as_money(income - expenses)}
+
+
+def personal_by_category(year=None, month=None, entry_type=Transaction.DEBIT, start=None, end=None) -> list[dict]:
+    qs = filter_by_period(PersonalTransaction.objects.all(), year, month, start, end).filter(
+        entry_type=entry_type
+    )
+    rows = list(
+        qs.values("category_id", "category__name")
+        .annotate(total=Sum("amount"))
+        .order_by("-total", "category__name")
+    )
+    grand = sum((as_money(row["total"]) for row in rows), ZERO)
+    return [
+        {
+            "category_id": row["category_id"],
+            "category": row["category__name"],
+            "total": as_money(row["total"]),
+            "share": (as_money(row["total"]) * 100 / grand).quantize(Decimal("0.1")) if grand else ZERO,
+        }
+        for row in rows
+    ]
+
+
+def personal_monthly_trend(year: int) -> list[dict]:
+    rows = []
+    for month in range(1, 13):
+        totals = personal_totals(year, month)
+        rows.append({"month": month, "month_name": month_name(month), **totals})
+    return rows
 
 
 def year_choices():

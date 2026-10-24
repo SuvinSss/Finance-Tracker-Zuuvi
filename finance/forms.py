@@ -5,7 +5,16 @@ from django import forms
 from django.contrib.auth.forms import AuthenticationForm
 from django.core.exceptions import ValidationError
 
-from .models import Account, Budget, Category, CompanySettings, Loan, Transaction
+from .models import (
+    Account,
+    Budget,
+    Category,
+    CompanySettings,
+    Loan,
+    PersonalCategory,
+    PersonalTransaction,
+    Transaction,
+)
 from .period import MONTH_CHOICES
 
 
@@ -332,6 +341,70 @@ class BudgetForm(forms.ModelForm):
                 qs = qs.exclude(pk=self.instance.pk)
             if qs.exists():
                 raise ValidationError("A budget for this category already exists for the selected month.")
+        return cleaned
+
+
+class PersonalCategoryForm(forms.ModelForm):
+    class Meta:
+        model = PersonalCategory
+        fields = ["name", "category_type", "is_active"]
+        widgets = {
+            "name": forms.TextInput(attrs={"class": "form-control"}),
+            "category_type": forms.Select(attrs={"class": "form-select"}),
+            "is_active": forms.CheckboxInput(attrs={"class": "form-check-input"}),
+        }
+
+    def clean_category_type(self):
+        category_type = self.cleaned_data["category_type"]
+        if (
+            self.instance.pk
+            and category_type != self.instance.category_type
+            and self.instance.is_in_use()
+        ):
+            raise ValidationError(
+                "This category is already used by entries, so its type can't be changed. "
+                "Create a new category instead."
+            )
+        return category_type
+
+
+class PersonalTransactionForm(forms.ModelForm):
+    class Meta:
+        model = PersonalTransaction
+        fields = ["date", "entry_type", "amount", "category", "payment_mode", "description", "notes"]
+        labels = {"entry_type": "Type"}
+        widgets = {
+            "date": forms.DateInput(attrs={"class": "form-control", "type": "date"}),
+            "entry_type": forms.Select(attrs={"class": "form-select"}),
+            "amount": forms.NumberInput(attrs={"class": "form-control", "step": "0.01", "min": "0.01"}),
+            "category": forms.Select(attrs={"class": "form-select"}),
+            "payment_mode": forms.Select(attrs={"class": "form-select"}),
+            "description": forms.TextInput(attrs={"class": "form-control"}),
+            "notes": forms.Textarea(attrs={"class": "form-control", "rows": 3}),
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["category"].queryset = PersonalCategory.objects.filter(is_active=True).order_by(
+            "category_type", "name"
+        )
+        if self.instance and self.instance.pk and self.instance.category_id:
+            self.fields["category"].queryset |= PersonalCategory.objects.filter(pk=self.instance.category_id)
+
+    def clean_amount(self):
+        amount = self.cleaned_data["amount"]
+        if amount is None or amount <= 0:
+            raise ValidationError("Amount must be greater than zero.")
+        return amount
+
+    def clean(self):
+        cleaned = super().clean()
+        entry_type = cleaned.get("entry_type")
+        category = cleaned.get("category")
+        if category and entry_type == Transaction.DEBIT and category.category_type != Category.EXPENSE:
+            self.add_error("category", "Expenses must use an expense category.")
+        if category and entry_type == Transaction.CREDIT and category.category_type != Category.INCOME:
+            self.add_error("category", "Income must use an income category.")
         return cleaned
 
 

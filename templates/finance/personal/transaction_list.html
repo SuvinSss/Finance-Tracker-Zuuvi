@@ -1,0 +1,123 @@
+{% extends "base.html" %}
+{% load money_tags %}
+
+{% block title %}Personal transactions{% endblock %}
+{% block heading %}Personal transactions{% endblock %}
+{% block subtitle %}Your own income and expenses · not included in company reports{% endblock %}
+
+{% block content %}
+<div class="d-flex flex-wrap gap-2 mb-3">
+  <a class="btn btn-primary" href="{% url 'finance:personal_transaction_create' %}">Add personal entry</a>
+  <a class="btn btn-outline-primary" href="?{{ querystring }}{% if querystring %}&{% endif %}export=csv">Export CSV</a>
+</div>
+
+<form class="card card-soft p-3 mb-3" method="get">
+  <div class="row g-2 align-items-end">
+    <div class="col-md-3">
+      <label class="form-label" for="q">Search</label>
+      <input class="form-control" id="q" name="q" value="{{ q }}" placeholder="Description or notes">
+    </div>
+    <div class="col-md-2">
+      <label class="form-label" for="start">From</label>
+      <input class="form-control" id="start" type="date" name="start" value="{{ start }}">
+    </div>
+    <div class="col-md-2">
+      <label class="form-label" for="end">To</label>
+      <input class="form-control" id="end" type="date" name="end" value="{{ end }}">
+    </div>
+    <div class="col-md-2">
+      <label class="form-label" for="entry_type">Type</label>
+      <select class="form-select" id="entry_type" name="entry_type">
+        <option value="">All</option>
+        <option value="debit" {% if entry_type == "debit" %}selected{% endif %}>Expense</option>
+        <option value="credit" {% if entry_type == "credit" %}selected{% endif %}>Income</option>
+      </select>
+    </div>
+    <div class="col-md-3">
+      <label class="form-label" for="category">Category</label>
+      <select class="form-select" id="category" name="category">
+        <option value="">All</option>
+        {% for cat in categories %}
+          <option value="{{ cat.pk }}" {% if category_id|stringformat:"s" == cat.pk|stringformat:"s" %}selected{% endif %}>{{ cat }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="col-md-2">
+      <label class="form-label" for="payment_mode">Paid via</label>
+      <select class="form-select" id="payment_mode" name="payment_mode">
+        <option value="">All</option>
+        {% for value, label in payment_modes %}
+          <option value="{{ value }}" {% if payment_mode == value %}selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="col-md-2">
+      <label class="form-label" for="sort">Sort</label>
+      <select class="form-select" id="sort" name="sort">
+        <option value="-date" {% if sort == "-date" %}selected{% endif %}>Date (newest)</option>
+        <option value="date" {% if sort == "date" %}selected{% endif %}>Date (oldest)</option>
+        <option value="-amount" {% if sort == "-amount" %}selected{% endif %}>Amount (high)</option>
+        <option value="amount" {% if sort == "amount" %}selected{% endif %}>Amount (low)</option>
+      </select>
+    </div>
+    <div class="col-md-2">
+      <div class="form-check mt-4">
+        <input class="form-check-input" type="checkbox" name="all" value="1" id="all" {% if showing_all %}checked{% endif %}>
+        <label class="form-check-label" for="all">All dates</label>
+      </div>
+    </div>
+    <div class="col-md-2">
+      <button class="btn btn-primary w-100" type="submit">Filter</button>
+    </div>
+  </div>
+</form>
+
+<div class="card card-soft p-3">
+  <div class="d-flex flex-wrap gap-4 mb-2">
+    <span>Income: <strong class="accent-income">{{ filtered_income|inr }}</strong></span>
+    <span>Expenses: <strong class="accent-expense">{{ filtered_expenses|inr }}</strong></span>
+  </div>
+  <div class="table-responsive">
+    <table class="table align-middle">
+      <thead>
+        <tr>
+          <th>Date</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Category</th>
+          <th>Paid via</th>
+          <th class="text-end">Amount</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for txn in page %}
+        <tr>
+          <td>{{ txn.date }}</td>
+          <td>{% if txn.entry_type == "credit" %}Income{% else %}Expense{% endif %}</td>
+          <td>{{ txn.description }}{% if txn.notes %}<br><small class="text-secondary">{{ txn.notes|truncatechars:60 }}</small>{% endif %}</td>
+          <td>{{ txn.category.name }}</td>
+          <td>{{ txn.get_payment_mode_display }}</td>
+          <td class="text-end {% if txn.entry_type == 'credit' %}accent-income{% endif %}">{{ txn.amount|inr }}</td>
+          <td class="text-end text-nowrap">
+            <a class="btn btn-sm btn-outline-secondary" href="{% url 'finance:personal_transaction_edit' txn.pk %}">Edit</a>
+            <a class="btn btn-sm btn-outline-danger" href="{% url 'finance:personal_transaction_delete' txn.pk %}">Delete</a>
+          </td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="7" class="text-secondary">No personal entries match these filters.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% if page.has_other_pages %}
+    <nav>
+      <ul class="pagination mb-0">
+        {% if page.has_previous %}<li class="page-item"><a class="page-link" href="?page={{ page.previous_page_number }}{% if querystring %}&{{ querystring }}{% endif %}">Previous</a></li>{% endif %}
+        <li class="page-item disabled"><span class="page-link">Page {{ page.number }} of {{ page.paginator.num_pages }}</span></li>
+        {% if page.has_next %}<li class="page-item"><a class="page-link" href="?page={{ page.next_page_number }}{% if querystring %}&{{ querystring }}{% endif %}">Next</a></li>{% endif %}
+      </ul>
+    </nav>
+  {% endif %}
+</div>
+{% endblock %}

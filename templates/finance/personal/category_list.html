@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Personal categories{% endblock %}
+{% block heading %}Personal categories{% endblock %}
+{% block subtitle %}Categories for your own income and expenses{% endblock %}
+{% block period %}{% endblock %}
+
+{% block content %}
+<a class="btn btn-primary mb-3" href="{% url 'finance:personal_category_create' %}">Add personal category</a>
+<div class="card card-soft p-3">
+  <div class="table-responsive">
+    <table class="table align-middle">
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Status</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for cat in categories %}
+        <tr>
+          <td>{{ cat.name }}</td>
+          <td>{{ cat.get_category_type_display }}</td>
+          <td>{% if cat.is_active %}Active{% else %}Inactive{% endif %}</td>
+          <td class="text-end">
+            <a class="btn btn-sm btn-outline-secondary" href="{% url 'finance:personal_category_edit' cat.pk %}">Edit</a>
+            <form class="d-inline" method="post" action="{% url 'finance:personal_category_delete' cat.pk %}" onsubmit="return confirm('Deactivate or delete this category?');">
+              {% csrf_token %}
+              <button class="btn btn-sm btn-outline-danger" type="submit">Deactivate / delete</button>
+            </form>
+          </td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="4" class="text-secondary">No personal categories yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

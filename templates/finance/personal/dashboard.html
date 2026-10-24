@@ -1,0 +1,161 @@
+{% extends "base.html" %}
+{% load money_tags %}
+
+{% block title %}Personal dashboard{% endblock %}
+{% block heading %}Personal dashboard{% endblock %}
+{% block subtitle %}{{ month_label }} · your own money, kept separate from company figures{% endblock %}
+
+{% block content %}
+<div class="d-flex flex-wrap gap-2 mb-3">
+  <a class="btn btn-primary" href="{% url 'finance:personal_transaction_create' %}">Add personal entry</a>
+  <a class="btn btn-outline-primary" href="{% url 'finance:personal_transaction_list' %}">View all entries</a>
+</div>
+
+<div class="row g-3 mb-4">
+  <div class="col-md-6 col-xl-3">
+    <div class="card summary-card tile-income p-3 h-100">
+      <div class="label">Income this month</div>
+      <div class="value accent-income">{{ totals.income|inr }}</div>
+    </div>
+  </div>
+  <div class="col-md-6 col-xl-3">
+    <div class="card summary-card tile-expense p-3 h-100">
+      <div class="label">Expenses this month</div>
+      <div class="value accent-expense">{{ totals.expenses|inr }}</div>
+    </div>
+  </div>
+  <div class="col-md-6 col-xl-3">
+    <div class="card summary-card tile-cashflow{% if totals.net < 0 %} tile-negative{% endif %} p-3 h-100">
+      <div class="label">Net savings this month</div>
+      <div class="value {% if totals.net < 0 %}accent-warn{% endif %}">{{ totals.net|inr }}</div>
+    </div>
+  </div>
+  <div class="col-md-6 col-xl-3">
+    <div class="card summary-card tile-balance p-3 h-100">
+      <div class="label">Expenses in {{ year }}</div>
+      <div class="value">{{ year_totals.expenses|inr }}</div>
+      <div class="small text-secondary">Income {{ year_totals.income|inr }} · Net {{ year_totals.net|inr }}</div>
+    </div>
+  </div>
+</div>
+
+<div class="row g-3 mb-3">
+  <div class="col-xl-7">
+    <div class="card card-soft p-3 h-100">
+      <h2 class="h5">Expenses by category</h2>
+      <div class="table-responsive">
+        <table class="table align-middle mb-0">
+          <thead>
+            <tr>
+              <th>Category</th>
+              <th class="text-end">Spent</th>
+              <th class="text-end">Share</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in by_cat %}
+            <tr>
+              <td><a href="{% url 'finance:personal_transaction_list' %}?category={{ row.category_id }}">{{ row.category }}</a></td>
+              <td class="text-end">{{ row.total|inr }}</td>
+              <td class="text-end">{{ row.share }}%</td>
+            </tr>
+            {% empty %}
+            <tr><td colspan="3" class="text-secondary">No personal expenses in {{ month_label }}.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% if income_by_cat %}
+      <h2 class="h6 mt-4">Income by category</h2>
+      {% for row in income_by_cat %}
+        <div class="d-flex justify-content-between py-1 border-bottom">
+          <span>{{ row.category }}</span><strong>{{ row.total|inr }}</strong>
+        </div>
+      {% endfor %}
+      {% endif %}
+    </div>
+  </div>
+  <div class="col-xl-5">
+    <div class="card card-soft p-3 h-100">
+      <h2 class="h5">Where the money went</h2>
+      {% if by_cat %}
+        <canvas id="catChart" height="240"></canvas>
+      {% else %}
+        <p class="text-secondary mb-0">Add expenses to see the breakdown.</p>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+<div class="card card-soft p-3 mb-3">
+  <h2 class="h5">Income vs expenses in {{ year }}</h2>
+  <canvas id="trendChart" height="90"></canvas>
+</div>
+
+<div class="card card-soft p-3">
+  <div class="d-flex justify-content-between align-items-center mb-2">
+    <h2 class="h5 mb-0">Recent personal entries</h2>
+    <a class="btn btn-sm btn-primary" href="{% url 'finance:personal_transaction_create' %}">Add entry</a>
+  </div>
+  <div class="table-responsive">
+    <table class="table align-middle mb-0">
+      <thead>
+        <tr>
+          <th>Date</th>
+          <th>Description</th>
+          <th>Category</th>
+          <th>Paid via</th>
+          <th class="text-end">Amount</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for txn in recent %}
+        <tr>
+          <td>{{ txn.date }}</td>
+          <td><a href="{% url 'finance:personal_transaction_edit' txn.pk %}">{{ txn.description }}</a></td>
+          <td>{{ txn.category.name }}</td>
+          <td>{{ txn.get_payment_mode_display }}</td>
+          <td class="text-end {% if txn.entry_type == 'credit' %}accent-income{% endif %}">{% if txn.entry_type == "debit" %}-{% else %}+{% endif %}{{ txn.amount|inr }}</td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="5" class="text-secondary">No personal entries yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{{ chart|json_script:"personal-chart-data" }}
+{% endblock %}
+
+{% block extra_js %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script>
+  const data = JSON.parse(document.getElementById("personal-chart-data").textContent);
+  const palette = ["#226143", "#b26a00", "#2f6fb0", "#8a3ffc", "#c2185b", "#00838f", "#6d4c41", "#558b2f", "#ef6c00", "#5c6bc0", "#9e9d24", "#78909c"];
+  const cat = document.getElementById("catChart");
+  if (cat) {
+    new Chart(cat, {
+      type: "doughnut",
+      data: {
+        labels: data.cat_labels,
+        datasets: [{ data: data.cat_values.map(Number), backgroundColor: palette }]
+      },
+      options: { plugins: { legend: { position: "bottom" } } }
+    });
+  }
+  const trend = document.getElementById("trendChart");
+  if (trend) {
+    new Chart(trend, {
+      type: "bar",
+      data: {
+        labels: data.months,
+        datasets: [
+          { label: "Income", data: data.income.map(Number), backgroundColor: "#226143" },
+          { label: "Expenses", data: data.expenses.map(Number), backgroundColor: "#b26a00" }
+        ]
+      },
+      options: { scales: { y: { beginAtZero: true } } }
+    });
+  }
+</script>
+{% endblock %}

@@ -35,4 +35,17 @@ urlpatterns = [
     path("loans/<int:pk>/delete/", views.loan_delete, name="loan_delete"),
     path("reports/", views.reports, name="reports"),
     path("settings/", views.settings_view, name="settings"),
+    path("personal/", views.personal_dashboard, name="personal_dashboard"),
+    path("personal/transactions/", views.personal_transaction_list, name="personal_transaction_list"),
+    path("personal/transactions/add/", views.personal_transaction_create, name="personal_transaction_create"),
+    path("personal/transactions/<int:pk>/edit/", views.personal_transaction_edit, name="personal_transaction_edit"),
+    path(
+        "personal/transactions/<int:pk>/delete/",
+        views.personal_transaction_delete,
+        name="personal_transaction_delete",
+    ),
+    path("personal/categories/", views.personal_category_list, name="personal_category_list"),
+    path("personal/categories/add/", views.personal_category_create, name="personal_category_create"),
+    path("personal/categories/<int:pk>/edit/", views.personal_category_edit, name="personal_category_edit"),
+    path("personal/categories/<int:pk>/delete/", views.personal_category_delete, name="personal_category_delete"),
 ]
