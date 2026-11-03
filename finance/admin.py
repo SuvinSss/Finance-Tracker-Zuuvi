@@ -7,6 +7,8 @@ from .models import (
     CompanySettings,
     Loan,
     PersonalCategory,
+    PersonalDebt,
+    PersonalDebtPayment,
     PersonalTransaction,
     Transaction,
 )
@@ -60,3 +62,16 @@ class PersonalTransactionAdmin(admin.ModelAdmin):
     list_display = ("date", "entry_type", "amount", "category", "payment_mode", "description")
     list_filter = ("entry_type", "payment_mode", "category")
     search_fields = ("description",)
+
+
+class PersonalDebtPaymentInline(admin.TabularInline):
+    model = PersonalDebtPayment
+    extra = 0
+
+
+@admin.register(PersonalDebt)
+class PersonalDebtAdmin(admin.ModelAdmin):
+    list_display = ("start_date", "direction", "counterparty", "amount", "has_emi_plan", "due_date")
+    list_filter = ("direction", "counterparty_type", "has_emi_plan")
+    search_fields = ("counterparty", "notes")
+    inlines = [PersonalDebtPaymentInline]

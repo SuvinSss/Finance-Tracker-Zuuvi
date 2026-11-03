@@ -88,6 +88,40 @@
 </div>
 
 <div class="card card-soft p-3 mb-3">
+  <div class="d-flex justify-content-between align-items-center mb-2">
+    <h2 class="h5 mb-0">Money lent &amp; borrowed</h2>
+    <div class="d-flex gap-2">
+      <a class="btn btn-sm btn-outline-primary" href="{% url 'finance:personal_lent_list' %}">Money lent</a>
+      <a class="btn btn-sm btn-outline-primary" href="{% url 'finance:personal_borrowed_list' %}">Money borrowed</a>
+    </div>
+  </div>
+  <div class="d-flex flex-wrap gap-4 mb-2">
+    <span>Others owe you: <a href="{% url 'finance:personal_lent_list' %}"><strong class="accent-income">{{ debts.receivable|inr }}</strong></a></span>
+    <span>You owe: <a href="{% url 'finance:personal_borrowed_list' %}"><strong class="accent-expense">{{ debts.payable|inr }}</strong></a></span>
+  </div>
+  {% if debts.attention %}
+  <div class="table-responsive">
+    <table class="table align-middle mb-0">
+      <thead><tr><th>Person / bank</th><th>Type</th><th>Due</th><th class="text-end">Amount due</th><th>Status</th></tr></thead>
+      <tbody>
+        {% for s in debts.attention %}
+        <tr>
+          <td><a href="{% url 'finance:personal_debt_detail' s.debt.pk %}">{{ s.debt.counterparty }}</a></td>
+          <td>{% if s.debt.is_lent %}To receive{% else %}To pay{% endif %}</td>
+          <td>{{ s.next_due_date|default:"—" }}</td>
+          <td class="text-end">{% if s.overdue_amount %}{{ s.overdue_amount|inr }}{% else %}{{ s.next_amount|inr }}{% endif %}</td>
+          <td><span class="badge {{ s.state|emi_badge }}">{{ s.state }}</span></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="text-secondary mb-0">Nothing due or overdue this month.</p>
+  {% endif %}
+</div>
+
+<div class="card card-soft p-3 mb-3">
   <h2 class="h5">Income vs expenses in {{ year }}</h2>
   <canvas id="trendChart" height="90"></canvas>
 </div>

@@ -48,4 +48,26 @@ urlpatterns = [
     path("personal/categories/add/", views.personal_category_create, name="personal_category_create"),
     path("personal/categories/<int:pk>/edit/", views.personal_category_edit, name="personal_category_edit"),
     path("personal/categories/<int:pk>/delete/", views.personal_category_delete, name="personal_category_delete"),
+    path("personal/lent/", views.personal_debt_list, {"direction": "lent"}, name="personal_lent_list"),
+    path("personal/lent/add/", views.personal_debt_create, {"direction": "lent"}, name="personal_lent_create"),
+    path("personal/borrowed/", views.personal_debt_list, {"direction": "borrowed"}, name="personal_borrowed_list"),
+    path(
+        "personal/borrowed/add/",
+        views.personal_debt_create,
+        {"direction": "borrowed"},
+        name="personal_borrowed_create",
+    ),
+    path("personal/debts/<int:pk>/", views.personal_debt_detail, name="personal_debt_detail"),
+    path("personal/debts/<int:pk>/edit/", views.personal_debt_edit, name="personal_debt_edit"),
+    path("personal/debts/<int:pk>/delete/", views.personal_debt_delete, name="personal_debt_delete"),
+    path(
+        "personal/debts/<int:pk>/payments/add/",
+        views.personal_debt_payment_create,
+        name="personal_debt_payment_create",
+    ),
+    path(
+        "personal/debts/payments/<int:pk>/delete/",
+        views.personal_debt_payment_delete,
+        name="personal_debt_payment_delete",
+    ),
 ]

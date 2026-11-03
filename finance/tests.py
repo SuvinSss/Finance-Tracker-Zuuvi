@@ -13,11 +13,19 @@ from .models import (
     CompanySettings,
     Loan,
     PersonalCategory,
+    PersonalDebt,
+    PersonalDebtPayment,
     PersonalTransaction,
     Transaction,
 )
 from .services import (
+    DEBT_OPEN,
+    DEBT_SETTLED,
     EMI_DUE,
+    EMI_OVERDUE,
+    EMI_PAID,
+    EMI_UPCOMING,
+    INSTALLMENT_PARTLY_PAID,
     STATUS_FULL,
     STATUS_NEAR,
     STATUS_OVER,
@@ -27,6 +35,8 @@ from .services import (
     budget_vs_actual,
     create_transfer,
     dashboard_summary,
+    debt_status,
+    debt_summary,
     ensure_emi_category,
     expenses_by_category,
     income_expense_totals,
@@ -698,3 +708,204 @@ class PersonalTests(FinanceBaseTestCase):
 
         for name in ["personal_category_list", "personal_category_create", "personal_transaction_create"]:
             self.assertEqual(self.client.get(reverse(f"finance:{name}")).status_code, 200)
+
+
+class PersonalDebtTests(FinanceBaseTestCase):
+    TODAY = date(2026, 11, 3)
+
+    def setUp(self):
+        super().setUp()
+        self.login()
+
+    def make_debt(self, **kwargs):
+        defaults = {
+            "direction": PersonalDebt.LENT,
+            "counterparty": "Ravi",
+            "amount": Decimal("10000.00"),
+            "start_date": date(2026, 8, 1),
+        }
+        defaults.update(kwargs)
+        debt = PersonalDebt(**defaults)
+        debt.full_clean()
+        debt.save()
+        return debt
+
+    def pay(self, debt, amount, when=date(2026, 10, 1)):
+        return PersonalDebtPayment.objects.create(debt=debt, amount=Decimal(amount), date=when)
+
+    def make_emi_debt(self, **kwargs):
+        defaults = {
+            "amount": Decimal("12000.00"),
+            "has_emi_plan": True,
+            "installment_amount": Decimal("2000.00"),
+            "installment_day": 5,
+            "first_installment_month": date(2026, 9, 15),
+            "tenure_months": 6,
+        }
+        defaults.update(kwargs)
+        return self.make_debt(**defaults)
+
+    def test_partial_payments_reduce_outstanding_both_directions(self):
+        lent = self.make_debt()
+        borrowed = self.make_debt(direction=PersonalDebt.BORROWED, counterparty="HDFC", amount=Decimal("4000"))
+        self.pay(lent, "2500")
+        self.pay(lent, "1500")
+        self.pay(borrowed, "1000")
+        status = debt_status(lent, self.TODAY)
+        self.assertEqual(status["total_paid"], Decimal("4000.00"))
+        self.assertEqual(status["outstanding"], Decimal("6000.00"))
+        self.assertEqual(status["state"], DEBT_OPEN)
+        summary = debt_summary(self.TODAY)
+        self.assertEqual(summary["receivable"], Decimal("6000.00"))
+        self.assertEqual(summary["payable"], Decimal("3000.00"))
+
+        self.pay(borrowed, "3000")
+        self.assertEqual(debt_status(borrowed, self.TODAY)["state"], DEBT_SETTLED)
+        self.assertEqual(debt_summary(self.TODAY)["payable"], Decimal("0.00"))
+
+    def test_emi_schedule_allocates_payments_oldest_first(self):
+        debt = self.make_emi_debt()
+        self.assertEqual(debt.first_installment_month, date(2026, 9, 1))
+        self.pay(debt, "3000")
+        status = debt_status(debt, self.TODAY)
+        states = [row["state"] for row in status["schedule"]]
+        # Sep paid, Oct partly paid (and overdue), Nov due this month, rest upcoming.
+        self.assertEqual(states, [EMI_PAID, INSTALLMENT_PARTLY_PAID, EMI_DUE, EMI_UPCOMING, EMI_UPCOMING, EMI_UPCOMING])
+        self.assertTrue(status["schedule"][1]["overdue"])
+        self.assertEqual(status["state"], EMI_OVERDUE)
+        self.assertEqual(status["overdue_amount"], Decimal("1000.00"))
+        self.assertEqual(status["outstanding"], Decimal("9000.00"))
+        self.assertEqual(status["next_due_date"], date(2026, 10, 5))
+        self.assertEqual(status["next_amount"], Decimal("1000.00"))
+
+        # A lump sum covers several months.
+        self.pay(debt, "5000")
+        status = debt_status(debt, self.TODAY)
+        self.assertEqual(status["paid_installments"], 4)
+        self.assertEqual(status["state"], DEBT_OPEN)
+
+    def test_total_due_uses_installments(self):
+        debt = self.make_emi_debt(amount=Decimal("11000.00"))
+        self.assertEqual(debt_status(debt, self.TODAY)["total_due"], Decimal("12000.00"))
+
+    def test_one_time_due_date_overdue(self):
+        debt = self.make_debt(due_date=date(2026, 10, 31))
+        status = debt_status(debt, self.TODAY)
+        self.assertEqual(status["state"], EMI_OVERDUE)
+        self.assertEqual(status["overdue_amount"], Decimal("10000.00"))
+        self.pay(debt, "10000")
+        self.assertEqual(debt_status(debt, self.TODAY)["state"], DEBT_SETTLED)
+
+    def test_emi_fields_required_when_plan_enabled(self):
+        with self.assertRaises(ValidationError):
+            self.make_debt(has_emi_plan=True)
+        response = self.client.post(
+            reverse("finance:personal_lent_create"),
+            {
+                "counterparty": "Ravi",
+                "counterparty_type": PersonalDebt.PERSON,
+                "amount": "5000",
+                "start_date": "2026-10-01",
+                "payment_mode": PersonalTransaction.UPI,
+                "has_emi_plan": "on",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(PersonalDebt.objects.exists())
+
+    def test_create_with_emi_plan_and_record_payment_via_views(self):
+        response = self.client.post(
+            reverse("finance:personal_lent_create"),
+            {
+                "counterparty": "Ravi",
+                "counterparty_type": PersonalDebt.PERSON,
+                "amount": "6000",
+                "start_date": "2026-10-01",
+                "payment_mode": PersonalTransaction.UPI,
+                "has_emi_plan": "on",
+                "installment_amount": "1000",
+                "installment_day": "10",
+                "first_installment_month": "2026-11",
+                "tenure_months": "6",
+            },
+        )
+        debt = PersonalDebt.objects.get()
+        self.assertRedirects(response, reverse("finance:personal_debt_detail", args=[debt.pk]))
+        self.assertEqual(debt.first_installment_month, date(2026, 11, 1))
+
+        self.client.post(
+            reverse("finance:personal_debt_payment_create", args=[debt.pk]),
+            {"date": "2026-11-10", "amount": "1000", "payment_mode": PersonalTransaction.CASH},
+        )
+        payment = debt.payments.get()
+        self.assertEqual(debt_status(debt)["total_paid"], Decimal("1000.00"))
+
+        self.client.post(reverse("finance:personal_debt_payment_delete", args=[payment.pk]))
+        self.assertEqual(debt_status(debt)["outstanding"], Decimal("6000.00"))
+
+    def test_pages_render_and_personal_totals_untouched(self):
+        debt = self.make_emi_debt()
+        self.pay(debt, "3000")
+        self.make_debt(direction=PersonalDebt.BORROWED, counterparty="SBI", counterparty_type=PersonalDebt.BANK)
+        for name, args in [
+            ("personal_lent_list", []),
+            ("personal_borrowed_list", []),
+            ("personal_lent_create", []),
+            ("personal_borrowed_create", []),
+            ("personal_debt_detail", [debt.pk]),
+            ("personal_debt_edit", [debt.pk]),
+            ("personal_debt_payment_create", [debt.pk]),
+            ("personal_debt_delete", [debt.pk]),
+        ]:
+            self.assertEqual(self.client.get(reverse(f"finance:{name}", args=args)).status_code, 200, name)
+        lent_csv = self.client.get(reverse("finance:personal_lent_list") + "?status=all&export=csv")
+        self.assertIn(b"Ravi", lent_csv.content)
+        self.assertNotIn(b"SBI", lent_csv.content)
+        borrowed_csv = self.client.get(reverse("finance:personal_borrowed_list") + "?status=all&export=csv")
+        self.assertIn(b"SBI", borrowed_csv.content)
+        self.assertNotIn(b"Ravi", borrowed_csv.content)
+        dash = self.client.get(reverse("finance:personal_dashboard"))
+        self.assertContains(dash, "Money lent &amp; borrowed")
+        self.assertEqual(personal_totals(2026, 10)["expenses"], Decimal("0.00"))
+        self.assertEqual(personal_totals(2026, 10)["income"], Decimal("0.00"))
+
+    def test_delete_removes_payments(self):
+        debt = self.make_debt()
+        self.pay(debt, "100")
+        self.client.post(reverse("finance:personal_debt_delete", args=[debt.pk]))
+        self.assertFalse(PersonalDebt.objects.exists())
+        self.assertFalse(PersonalDebtPayment.objects.exists())
+
+    def test_separate_sections_and_sidebar_highlight(self):
+        lent = self.make_debt(counterparty="Ravi")
+        borrowed = self.make_debt(direction=PersonalDebt.BORROWED, counterparty="Meena")
+        lent_page = self.client.get(reverse("finance:personal_lent_list"))
+        self.assertContains(lent_page, "Ravi")
+        self.assertNotContains(lent_page, "Meena")
+        borrowed_page = self.client.get(reverse("finance:personal_borrowed_list"))
+        self.assertContains(borrowed_page, "Meena")
+        self.assertNotContains(borrowed_page, "Ravi")
+
+        active_lent = f'active" href="{reverse("finance:personal_lent_list")}"'
+        active_borrowed = f'active" href="{reverse("finance:personal_borrowed_list")}"'
+        detail = self.client.get(reverse("finance:personal_debt_detail", args=[borrowed.pk]))
+        self.assertContains(detail, active_borrowed)
+        self.assertNotContains(detail, active_lent)
+        detail = self.client.get(reverse("finance:personal_debt_detail", args=[lent.pk]))
+        self.assertContains(detail, active_lent)
+
+    def test_create_from_borrowed_section_sets_direction(self):
+        self.client.post(
+            reverse("finance:personal_borrowed_create"),
+            {
+                "counterparty": "SBI",
+                "counterparty_type": PersonalDebt.BANK,
+                "amount": "50000",
+                "start_date": "2026-10-01",
+                "payment_mode": PersonalTransaction.BANK,
+            },
+        )
+        debt = PersonalDebt.objects.get()
+        self.assertEqual(debt.direction, PersonalDebt.BORROWED)
+        self.client.post(reverse("finance:personal_debt_delete", args=[debt.pk]))
+        self.assertFalse(PersonalDebt.objects.exists())

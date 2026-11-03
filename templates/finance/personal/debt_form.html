@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}{{ title }}{% endblock %}
+{% block heading %}{{ title }}{% endblock %}
+{% block subtitle %}Kept separate from personal income and expenses{% endblock %}
+{% block period %}{% endblock %}
+
+{% block content %}
+<div class="card card-soft p-4" style="max-width: 720px;">
+  <form method="post" novalidate>
+    {% csrf_token %}
+    {% if form.non_field_errors %}<div class="alert alert-danger">{{ form.non_field_errors }}</div>{% endif %}
+    {% for field in form %}
+      {% if field.name == "has_emi_plan" %}
+      <div class="form-check mb-3">
+        {{ field }}
+        <label class="form-check-label" for="{{ field.id_for_label }}">{{ field.label }}</label>
+        <div class="form-text">Use this when a fixed amount is paid back every month.</div>
+      </div>
+      {% else %}
+      <div class="mb-3" {% if field.name in form.emi_fields %}data-emi-row{% endif %}>
+        <label class="form-label" for="{{ field.id_for_label }}">{{ field.label }}</label>
+        {{ field }}
+        {% if field.help_text %}<div class="form-text">{{ field.help_text }}</div>{% endif %}
+        {% if field.errors %}<div class="text-danger small">{{ field.errors }}</div>{% endif %}
+      </div>
+      {% endif %}
+    {% endfor %}
+    <button class="btn btn-primary" type="submit">Save</button>
+    <a class="btn btn-outline-secondary" href="{% if debt %}{% url 'finance:personal_debt_detail' debt.pk %}{% else %}{% if debt_direction == 'lent' %}{% url 'finance:personal_lent_list' %}{% else %}{% url 'finance:personal_borrowed_list' %}{% endif %}{% endif %}">Cancel</a>
+  </form>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+  (function () {
+    const toggle = document.getElementById("id_has_emi_plan");
+    const rows = document.querySelectorAll("[data-emi-row]");
+    function sync() { rows.forEach((row) => { row.style.display = toggle.checked ? "" : "none"; }); }
+    toggle.addEventListener("change", sync);
+    sync();
+  })();
+</script>
+{% endblock %}

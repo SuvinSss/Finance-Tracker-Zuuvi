@@ -12,6 +12,8 @@ from .models import (
     CompanySettings,
     Loan,
     PersonalCategory,
+    PersonalDebt,
+    PersonalDebtPayment,
     PersonalTransaction,
     Transaction,
 )
@@ -406,6 +408,102 @@ class PersonalTransactionForm(forms.ModelForm):
         if category and entry_type == Transaction.CREDIT and category.category_type != Category.INCOME:
             self.add_error("category", "Income must use an income category.")
         return cleaned
+
+
+EMI_FIELDS = ["installment_amount", "installment_day", "first_installment_month", "tenure_months"]
+
+
+class PersonalDebtForm(forms.ModelForm):
+    emi_fields = EMI_FIELDS
+    first_installment_month = forms.DateField(
+        required=False,
+        label="First installment month",
+        input_formats=["%Y-%m"],
+        widget=forms.DateInput(format="%Y-%m", attrs={"class": "form-control", "type": "month"}),
+    )
+
+    class Meta:
+        model = PersonalDebt
+        fields = [
+            "counterparty",
+            "counterparty_type",
+            "amount",
+            "start_date",
+            "payment_mode",
+            "due_date",
+            "has_emi_plan",
+            "installment_amount",
+            "installment_day",
+            "first_installment_month",
+            "tenure_months",
+            "notes",
+        ]
+        labels = {
+            "counterparty_type": "Lender / borrower type",
+            "start_date": "Date",
+            "payment_mode": "Given / received via",
+            "installment_amount": "Installment amount",
+            "installment_day": "Installment due day",
+            "tenure_months": "Number of installments",
+        }
+        widgets = {
+            "counterparty": forms.TextInput(attrs={"class": "form-control"}),
+            "counterparty_type": forms.Select(attrs={"class": "form-select"}),
+            "amount": forms.NumberInput(attrs={"class": "form-control", "step": "0.01", "min": "0.01"}),
+            "start_date": forms.DateInput(attrs={"class": "form-control", "type": "date"}),
+            "payment_mode": forms.Select(attrs={"class": "form-select"}),
+            "due_date": forms.DateInput(attrs={"class": "form-control", "type": "date"}),
+            "has_emi_plan": forms.CheckboxInput(attrs={"class": "form-check-input"}),
+            "installment_amount": forms.NumberInput(attrs={"class": "form-control", "step": "0.01", "min": "0.01"}),
+            "installment_day": forms.NumberInput(attrs={"class": "form-control", "min": "1", "max": "28"}),
+            "tenure_months": forms.NumberInput(attrs={"class": "form-control", "min": "1"}),
+            "notes": forms.Textarea(attrs={"class": "form-control", "rows": 3}),
+        }
+
+    def __init__(self, *args, direction, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.instance.direction = direction
+        lent = direction == PersonalDebt.LENT
+        self.fields["counterparty"].label = "Borrower (person or bank)" if lent else "Lender (person or bank)"
+        self.fields["counterparty_type"].label = "Borrower type" if lent else "Lender type"
+        self.fields["payment_mode"].label = "Given via" if lent else "Received via"
+        self.fields["amount"].help_text = "Amount you gave." if lent else "Amount you received."
+        self.fields["has_emi_plan"].label = (
+            "They repay in monthly installments (EMI)" if lent else "I repay in monthly installments (EMI)"
+        )
+
+    def clean_amount(self):
+        amount = self.cleaned_data["amount"]
+        if amount is None or amount <= 0:
+            raise ValidationError("Amount must be greater than zero.")
+        return amount
+
+    def clean(self):
+        cleaned = super().clean()
+        if cleaned.get("has_emi_plan"):
+            for name in EMI_FIELDS:
+                if cleaned.get(name) in (None, ""):
+                    self.add_error(name, "Required for an installment plan.")
+        return cleaned
+
+
+class PersonalDebtPaymentForm(forms.ModelForm):
+    class Meta:
+        model = PersonalDebtPayment
+        fields = ["date", "amount", "payment_mode", "notes"]
+        labels = {"payment_mode": "Via"}
+        widgets = {
+            "date": forms.DateInput(attrs={"class": "form-control", "type": "date"}),
+            "amount": forms.NumberInput(attrs={"class": "form-control", "step": "0.01", "min": "0.01"}),
+            "payment_mode": forms.Select(attrs={"class": "form-select"}),
+            "notes": forms.Textarea(attrs={"class": "form-control", "rows": 3}),
+        }
+
+    def clean_amount(self):
+        amount = self.cleaned_data["amount"]
+        if amount is None or amount <= 0:
+            raise ValidationError("Amount must be greater than zero.")
+        return amount
 
 
 class SettingsForm(forms.ModelForm):

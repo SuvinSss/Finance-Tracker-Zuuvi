@@ -19,6 +19,8 @@ from .forms import (
     EmiPaymentForm,
     LoanForm,
     PersonalCategoryForm,
+    PersonalDebtForm,
+    PersonalDebtPaymentForm,
     PersonalTransactionForm,
     SettingsForm,
     StyledAuthenticationForm,
@@ -32,6 +34,8 @@ from .models import (
     CompanySettings,
     Loan,
     PersonalCategory,
+    PersonalDebt,
+    PersonalDebtPayment,
     PersonalTransaction,
     Transaction,
 )
@@ -42,6 +46,8 @@ from .services import (
     budget_vs_actual,
     create_transfer,
     dashboard_summary,
+    debt_status,
+    debt_summary,
     delete_transfer,
     emi_reminders,
     expenses_by_category,
@@ -646,6 +652,7 @@ def personal_dashboard(request):
             "by_cat": by_cat,
             "income_by_cat": personal_by_category(year, month, entry_type=Transaction.CREDIT),
             "recent": PersonalTransaction.objects.select_related("category")[:10],
+            "debts": debt_summary(),
             "chart": {
                 "cat_labels": [row["category"] for row in by_cat],
                 "cat_values": [str(row["total"]) for row in by_cat],
@@ -817,3 +824,172 @@ def personal_category_delete(request, pk):
     category.delete()
     messages.success(request, "Personal category deleted.")
     return redirect("finance:personal_category_list")
+
+
+# --- Lend & borrow (separate "Money Lent" and "Money Borrowed" sections) -------
+
+
+def _debt_list_url(direction):
+    return f"finance:personal_{direction}_list"
+
+
+@login_required
+def personal_debt_list(request, direction):
+    status_filter = request.GET.get("status", "open")
+    q = request.GET.get("q", "").strip()
+
+    all_statuses = [
+        debt_status(d) for d in PersonalDebt.objects.filter(direction=direction).prefetch_related("payments")
+    ]
+    summary = debt_summary(statuses=all_statuses, direction=direction)
+
+    rows = all_statuses
+    if status_filter == "open":
+        rows = [r for r in rows if not r["settled"]]
+    elif status_filter == "settled":
+        rows = [r for r in rows if r["settled"]]
+    if q:
+        needle = q.lower()
+        rows = [r for r in rows if needle in r["debt"].counterparty.lower() or needle in r["debt"].notes.lower()]
+
+    is_lent = direction == PersonalDebt.LENT
+    if request.GET.get("export") == "csv":
+        return _csv_response(
+            "money-lent.csv" if is_lent else "money-borrowed.csv",
+            [
+                "Date", "Borrower" if is_lent else "Lender", "Amount", "Total due",
+                "Received back" if is_lent else "Paid back", "Outstanding",
+                "Installments", "Next due", "Status", "Notes",
+            ],
+            [
+                [
+                    r["debt"].start_date,
+                    r["debt"].counterparty,
+                    r["debt"].amount,
+                    r["total_due"],
+                    r["total_paid"],
+                    r["outstanding"],
+                    f"{r['debt'].installment_amount} x {r['debt'].tenure_months}" if r["debt"].has_emi_plan else "",
+                    r["next_due_date"] or "",
+                    r["state"],
+                    r["debt"].notes,
+                ]
+                for r in rows
+            ],
+        )
+
+    params = request.GET.copy()
+    params.pop("export", None)
+    return render(
+        request,
+        "finance/personal/debt_list.html",
+        {
+            "rows": rows,
+            "summary": summary,
+            "is_lent": is_lent,
+            "debt_direction": direction,
+            "status_filter": status_filter,
+            "q": q,
+            "querystring": params.urlencode(),
+        },
+    )
+
+
+@login_required
+def personal_debt_create(request, direction):
+    form = PersonalDebtForm(request.POST or None, direction=direction, initial={"start_date": timezone.localdate()})
+    if request.method == "POST" and form.is_valid():
+        debt = form.save()
+        messages.success(request, "Record saved.")
+        return redirect("finance:personal_debt_detail", pk=debt.pk)
+    title = "Add money lent" if direction == PersonalDebt.LENT else "Add money borrowed"
+    return render(
+        request,
+        "finance/personal/debt_form.html",
+        {"form": form, "title": title, "debt_direction": direction},
+    )
+
+
+@login_required
+def personal_debt_edit(request, pk):
+    debt = get_object_or_404(PersonalDebt, pk=pk)
+    form = PersonalDebtForm(request.POST or None, instance=debt, direction=debt.direction)
+    if request.method == "POST" and form.is_valid():
+        form.save()
+        messages.success(request, "Record updated.")
+        return redirect("finance:personal_debt_detail", pk=debt.pk)
+    title = "Edit money lent" if debt.is_lent else "Edit money borrowed"
+    return render(
+        request,
+        "finance/personal/debt_form.html",
+        {"form": form, "title": title, "debt": debt, "debt_direction": debt.direction},
+    )
+
+
+@login_required
+def personal_debt_detail(request, pk):
+    debt = get_object_or_404(PersonalDebt.objects.prefetch_related("payments"), pk=pk)
+    return render(
+        request,
+        "finance/personal/debt_detail.html",
+        {"debt": debt, "status": debt_status(debt), "debt_direction": debt.direction},
+    )
+
+
+@login_required
+def personal_debt_delete(request, pk):
+    debt = get_object_or_404(PersonalDebt, pk=pk)
+    if request.method == "POST":
+        direction = debt.direction
+        debt.delete()
+        messages.success(request, "Record and its repayments deleted.")
+        return redirect(_debt_list_url(direction))
+    return render(
+        request,
+        "finance/confirm_delete.html",
+        {
+            "object": debt,
+            "object_type": "money lent record" if debt.is_lent else "money borrowed record",
+            "debt_direction": debt.direction,
+        },
+    )
+
+
+@login_required
+def personal_debt_payment_create(request, pk):
+    debt = get_object_or_404(PersonalDebt.objects.prefetch_related("payments"), pk=pk)
+    status = debt_status(debt)
+    initial = {
+        "date": timezone.localdate(),
+        "amount": status["next_amount"] or None,
+        "payment_mode": debt.payment_mode,
+    }
+    form = PersonalDebtPaymentForm(request.POST or None, initial=initial)
+    if request.method == "POST" and form.is_valid():
+        payment = form.save(commit=False)
+        payment.debt = debt
+        payment.save()
+        if payment.amount > status["outstanding"]:
+            messages.warning(
+                request,
+                f"This payment is more than the {status['outstanding']} that was outstanding. "
+                "The record is now settled; check the amount if that's unexpected.",
+            )
+        else:
+            messages.success(request, "Money received recorded." if debt.is_lent else "Repayment recorded.")
+        return redirect("finance:personal_debt_detail", pk=debt.pk)
+    return render(
+        request,
+        "finance/personal/debt_payment_form.html",
+        {"form": form, "debt": debt, "status": status, "debt_direction": debt.direction},
+    )
+
+
+@login_required
+@require_POST
+def personal_debt_payment_delete(request, pk):
+    payment = get_object_or_404(PersonalDebtPayment, pk=pk)
+    debt_pk = payment.debt_id
+    payment.delete()
+    messages.success(request, "Payment removed. The outstanding balance has been updated.")
+    return redirect("finance:personal_debt_detail", pk=debt_pk)

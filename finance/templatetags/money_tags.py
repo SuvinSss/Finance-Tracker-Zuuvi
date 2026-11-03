@@ -2,6 +2,9 @@ from django import template
 
 from finance.money import format_inr
 from finance.services import (
+    DEBT_OPEN,
+    DEBT_SETTLED,
+    INSTALLMENT_PARTLY_PAID,
     EMI_DUE,
     EMI_OVERDUE,
     EMI_PAID,
@@ -40,5 +43,8 @@ def emi_badge(state):
         EMI_DUE: "bg-warning-subtle text-warning-emphasis",
         EMI_OVERDUE: "bg-danger-subtle text-danger-emphasis",
         EMI_UPCOMING: "bg-secondary-subtle text-secondary-emphasis",
+        INSTALLMENT_PARTLY_PAID: "bg-info-subtle text-info-emphasis",
+        DEBT_SETTLED: "bg-success-subtle text-success-emphasis",
+        DEBT_OPEN: "bg-primary-subtle text-primary-emphasis",
     }
     return mapping.get(state, "bg-light text-dark")

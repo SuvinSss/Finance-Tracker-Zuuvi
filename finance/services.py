@@ -6,7 +6,16 @@ from django.db import transaction
 from django.db.models import Sum
 from django.utils import timezone
 
-from .models import Account, Budget, Category, CompanySettings, Loan, PersonalTransaction, Transaction
+from .models import (
+    Account,
+    Budget,
+    Category,
+    CompanySettings,
+    Loan,
+    PersonalDebt,
+    PersonalTransaction,
+    Transaction,
+)
 from .money import ZERO, as_money
 from .period import month_bounds, month_name
 
@@ -460,6 +469,142 @@ def personal_monthly_trend(year: int) -> list[dict]:
         totals = personal_totals(year, month)
         rows.append({"month": month, "month_name": month_name(month), **totals})
     return rows
+
+
+# --- Lend & borrow (owner's personal debts): separate from income/expense -----
+
+DEBT_SETTLED = "Settled"
+DEBT_OPEN = "Open"
+INSTALLMENT_PARTLY_PAID = "Partly paid"
+
+
+def _date_state(due: date, today: date) -> str:
+    if due < today:
+        return EMI_OVERDUE
+    if (due.year, due.month) == (today.year, today.month):
+        return EMI_DUE
+    return EMI_UPCOMING
+
+
+def debt_schedule(debt: PersonalDebt, total_paid: Decimal, today: date) -> list[dict]:
+    """
+    Installment rows with payments allocated oldest-first, so a lump sum covers several months
+    and a short payment shows the installment as partly paid.
+    """
+    rows = []
+    remaining = total_paid
+    for number, month in enumerate(debt.schedule_months(), start=1):
+        due = debt.due_date_for(month)
+        expected = debt.installment_amount
+        covered = min(remaining, expected) if remaining > 0 else ZERO
+        remaining -= covered
+        balance = as_money(expected - covered)
+        date_state = _date_state(due, today)
+        if balance <= 0:
+            state = EMI_PAID
+        elif covered > 0:
+            state = INSTALLMENT_PARTLY_PAID
+        else:
+            state = date_state
+        rows.append(
+            {
+                "number": number,
+                "month": month,
+                "due_date": due,
+                "expected": as_money(expected),
+                "covered": as_money(covered),
+                "balance": balance,
+                "state": state,
+                "overdue": balance > 0 and date_state == EMI_OVERDUE,
+                "due_now": balance > 0 and date_state == EMI_DUE,
+            }
+        )
+    return rows
+
+
+def debt_status(debt: PersonalDebt, today: date | None = None) -> dict:
+    """Outstanding = total due − payments recorded. Deleting a payment reopens the balance."""
+    today = today or timezone.localdate()
+    payments = list(debt.payments.all())
+    total_paid = as_money(sum((p.amount for p in payments), ZERO))
+    total_due = as_money(debt.total_due)
+    outstanding = max(as_money(total_due - total_paid), ZERO)
+    settled = outstanding <= 0
+
+    schedule = debt_schedule(debt, total_paid, today) if debt.has_emi_plan else []
+    unpaid = [row for row in schedule if row["balance"] > 0]
+    overdue_rows = [row for row in schedule if row["overdue"]]
+    overdue_amount = as_money(sum((row["balance"] for row in overdue_rows), ZERO))
+
+    if settled:
+        state = DEBT_SETTLED
+    elif debt.has_emi_plan:
+        if overdue_rows:
+            state = EMI_OVERDUE
+        elif any(row["due_now"] for row in schedule):
+            state = EMI_DUE
+        else:
+            state = DEBT_OPEN
+    elif debt.due_date:
+        state = _date_state(debt.due_date, today)
+        if state == EMI_UPCOMING:
+            state = DEBT_OPEN
+        if state == EMI_OVERDUE:
+            overdue_amount = outstanding
+    else:
+        state = DEBT_OPEN
+
+    if settled:
+        next_due_date, next_amount = None, ZERO
+    elif unpaid:
+        next_due_date, next_amount = unpaid[0]["due_date"], unpaid[0]["balance"]
+    else:
+        next_due_date, next_amount = debt.due_date, outstanding
+
+    return {
+        "debt": debt,
+        "payments": payments,
+        "total_due": total_due,
+        "total_paid": total_paid,
+        "outstanding": outstanding,
+        "settled": settled,
+        "state": state,
+        "schedule": schedule,
+        "paid_installments": sum(1 for row in schedule if row["state"] == EMI_PAID),
+        "overdue_rows": overdue_rows,
+        "overdue_amount": overdue_amount,
+        "next_due_date": next_due_date,
+        "next_amount": as_money(next_amount),
+    }
+
+
+def debt_summary(today: date | None = None, statuses: list[dict] | None = None, direction=None) -> dict:
+    today = today or timezone.localdate()
+    if statuses is None:
+        statuses = [debt_status(d, today) for d in PersonalDebt.objects.prefetch_related("payments")]
+    if direction:
+        statuses = [s for s in statuses if s["debt"].direction == direction]
+    receivable = payable = ZERO
+    attention = []
+    for status in statuses:
+        if status["settled"]:
+            continue
+        if status["debt"].is_lent:
+            receivable += status["outstanding"]
+        else:
+            payable += status["outstanding"]
+        if status["state"] in {EMI_OVERDUE, EMI_DUE}:
+            attention.append(status)
+    attention.sort(key=lambda s: (s["state"] != EMI_OVERDUE, s["next_due_date"] or today))
+    return {
+        "receivable": as_money(receivable),
+        "payable": as_money(payable),
+        "net": as_money(receivable - payable),
+        "attention": attention,
+        "overdue_count": sum(1 for s in attention if s["state"] == EMI_OVERDUE),
+        "open_count": sum(1 for s in statuses if not s["settled"]),
+        "total_paid": as_money(sum((s["total_paid"] for s in statuses), ZERO)),
+    }
 
 
 def year_choices():

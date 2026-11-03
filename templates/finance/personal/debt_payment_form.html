@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% load money_tags %}
+{% block title %}{% if debt.is_lent %}Record money received{% else %}Record repayment{% endif %}{% endblock %}
+{% block heading %}{% if debt.is_lent %}Money received from{% else %}Repayment to{% endif %} {{ debt.counterparty }}{% endblock %}
+{% block subtitle %}Outstanding {{ status.outstanding|inr }}{% if debt.has_emi_plan %} · installment {{ debt.installment_amount|inr }}{% endif %} · partial amounts are fine{% endblock %}
+{% block period %}{% endblock %}
+
+{% block content %}
+<div class="card card-soft p-4" style="max-width: 720px;">
+  <form method="post" novalidate>
+    {% csrf_token %}
+    {% if form.non_field_errors %}<div class="alert alert-danger">{{ form.non_field_errors }}</div>{% endif %}
+    {% for field in form %}
+      <div class="mb-3">
+        <label class="form-label" for="{{ field.id_for_label }}">{{ field.label }}</label>
+        {{ field }}
+        {% if field.help_text %}<div class="form-text">{{ field.help_text }}</div>{% endif %}
+        {% if field.errors %}<div class="text-danger small">{{ field.errors }}</div>{% endif %}
+      </div>
+    {% endfor %}
+    <button class="btn btn-primary" type="submit">Save</button>
+    <a class="btn btn-outline-secondary" href="{% url 'finance:personal_debt_detail' debt.pk %}">Cancel</a>
+  </form>
+</div>
+{% endblock %}

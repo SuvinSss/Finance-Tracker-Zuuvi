@@ -17,6 +17,8 @@
     <div class="nav-section">Personal</div>
     <a class="nav-link {% if url_name == 'personal_dashboard' %}active{% endif %}" href="{% url 'finance:personal_dashboard' %}">Personal Dashboard</a>
     <a class="nav-link {% if 'personal' in url_name and 'transaction' in url_name %}active{% endif %}" href="{% url 'finance:personal_transaction_list' %}">Personal Transactions</a>
+    <a class="nav-link {% if debt_direction == 'lent' %}active{% endif %}" href="{% url 'finance:personal_lent_list' %}">Money Lent</a>
+    <a class="nav-link {% if debt_direction == 'borrowed' %}active{% endif %}" href="{% url 'finance:personal_borrowed_list' %}">Money Borrowed</a>
     <a class="nav-link {% if 'personal' in url_name and 'category' in url_name %}active{% endif %}" href="{% url 'finance:personal_category_list' %}">Personal Categories</a>
   </nav>
   {% endwith %}
@@ -25,3 +27,12 @@
     <button class="btn btn-outline-light w-100 btn-sm" type="submit">Logout</button>
   </form>
 </aside>
+<script>
+  (function () {
+    const sidebar = document.querySelector(".sidebar");
+    const active = sidebar && sidebar.querySelector(".nav-link.active");
+    if (active && active.offsetTop + active.offsetHeight > sidebar.clientHeight) {
+      sidebar.scrollTop = active.offsetTop - sidebar.clientHeight / 2;
+    }
+  })();
+</script>

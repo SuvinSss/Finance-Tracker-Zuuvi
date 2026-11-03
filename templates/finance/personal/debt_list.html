@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+{% load money_tags %}
+
+{% block title %}{% if is_lent %}Money lent{% else %}Money borrowed{% endif %}{% endblock %}
+{% block heading %}{% if is_lent %}Money lent{% else %}Money borrowed{% endif %}{% endblock %}
+{% block subtitle %}{% if is_lent %}Money you gave to people or institutions{% else %}Money you took from people or banks{% endif %} · not counted as personal income or expense{% endblock %}
+{% block period %}{% endblock %}
+
+{% block content %}
+<div class="d-flex flex-wrap gap-2 mb-3">
+  {% if is_lent %}
+  <a class="btn btn-primary" href="{% url 'finance:personal_lent_create' %}">Add money lent</a>
+  {% else %}
+  <a class="btn btn-primary" href="{% url 'finance:personal_borrowed_create' %}">Add money borrowed</a>
+  {% endif %}
+  <a class="btn btn-outline-secondary" href="?{{ querystring }}{% if querystring %}&{% endif %}export=csv">Export CSV</a>
+</div>
+
+<div class="row g-3 mb-3">
+  <div class="col-md-4">
+    <div class="card summary-card {% if is_lent %}tile-income{% else %}tile-expense{% endif %} p-3 h-100">
+      <div class="label">{% if is_lent %}Others owe you{% else %}You owe{% endif %}</div>
+      <div class="value {% if is_lent %}accent-income{% else %}accent-expense{% endif %}">{% if is_lent %}{{ summary.receivable|inr }}{% else %}{{ summary.payable|inr }}{% endif %}</div>
+      <div class="small text-secondary">{{ summary.open_count }} open record{{ summary.open_count|pluralize }}</div>
+    </div>
+  </div>
+  <div class="col-md-4">
+    <div class="card summary-card tile-balance p-3 h-100">
+      <div class="label">{% if is_lent %}Received back so far{% else %}Paid back so far{% endif %}</div>
+      <div class="value">{{ summary.total_paid|inr }}</div>
+    </div>
+  </div>
+  <div class="col-md-4">
+    <div class="card summary-card {% if summary.overdue_count %}tile-negative{% else %}tile-balance{% endif %} p-3 h-100">
+      <div class="label">Overdue records</div>
+      <div class="value {% if summary.overdue_count %}accent-warn{% endif %}">{{ summary.overdue_count }}</div>
+    </div>
+  </div>
+</div>
+
+<form class="card card-soft p-3 mb-3" method="get">
+  <div class="row g-2 align-items-end">
+    <div class="col-md-6">
+      <label class="form-label" for="q">Search</label>
+      <input class="form-control" id="q" name="q" value="{{ q }}" placeholder="{% if is_lent %}Borrower{% else %}Lender{% endif %} or notes">
+    </div>
+    <div class="col-md-4">
+      <label class="form-label" for="status">Status</label>
+      <select class="form-select" id="status" name="status">
+        <option value="open" {% if status_filter == "open" %}selected{% endif %}>Open</option>
+        <option value="settled" {% if status_filter == "settled" %}selected{% endif %}>Settled</option>
+        <option value="all" {% if status_filter == "all" %}selected{% endif %}>All</option>
+      </select>
+    </div>
+    <div class="col-md-2">
+      <button class="btn btn-primary w-100" type="submit">Filter</button>
+    </div>
+  </div>
+</form>
+
+<div class="card card-soft p-3">
+  <div class="table-responsive">
+    <table class="table align-middle">
+      <thead>
+        <tr>
+          <th>Date</th>
+          <th>{% if is_lent %}Borrower{% else %}Lender{% endif %}</th>
+          <th class="text-end">Total due</th>
+          <th class="text-end">{% if is_lent %}Received{% else %}Paid{% endif %}</th>
+          <th class="text-end">Outstanding</th>
+          <th>Plan</th>
+          <th>Next due</th>
+          <th>Status</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in rows %}
+        <tr>
+          <td>{{ r.debt.start_date }}</td>
+          <td><a href="{% url 'finance:personal_debt_detail' r.debt.pk %}">{{ r.debt.counterparty }}</a>{% if r.debt.counterparty_type == "bank" %} <small class="text-secondary">(bank)</small>{% endif %}</td>
+          <td class="text-end">{{ r.total_due|inr }}</td>
+          <td class="text-end">{{ r.total_paid|inr }}</td>
+          <td class="text-end fw-semibold">{{ r.outstanding|inr }}</td>
+          <td>{% if r.debt.has_emi_plan %}{{ r.debt.installment_amount|inr }} × {{ r.debt.tenure_months }} <small class="text-secondary">({{ r.paid_installments }} paid)</small>{% else %}One-time{% endif %}</td>
+          <td>{% if r.next_due_date %}{{ r.next_due_date }}{% else %}—{% endif %}</td>
+          <td><span class="badge {{ r.state|emi_badge }}">{{ r.state }}</span></td>
+          <td class="text-end text-nowrap">
+            {% if not r.settled %}
+            <a class="btn btn-sm btn-primary" href="{% url 'finance:personal_debt_payment_create' r.debt.pk %}">{% if is_lent %}Received{% else %}Paid back{% endif %}</a>
+            {% endif %}
+            <a class="btn btn-sm btn-outline-secondary" href="{% url 'finance:personal_debt_edit' r.debt.pk %}">Edit</a>
+          </td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="9" class="text-secondary">No records match these filters.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

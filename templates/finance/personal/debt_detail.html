@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% load money_tags %}
+
+{% block title %}{{ debt.counterparty }}{% endblock %}
+{% block heading %}{% if debt.is_lent %}Lent to{% else %}Borrowed from{% endif %} {{ debt.counterparty }}{% endblock %}
+{% block subtitle %}{{ debt.get_counterparty_type_display }} · {{ debt.start_date }} via {{ debt.get_payment_mode_display }}{% if debt.has_emi_plan %} · installment due on day {{ debt.installment_day }}{% elif debt.due_date %} · due {{ debt.due_date }}{% endif %}{% endblock %}
+{% block period %}{% endblock %}
+
+{% block content %}
+<div class="row g-3 mb-3">
+  <div class="col-md-3"><div class="card summary-card p-3 h-100"><div class="label">Amount {% if debt.is_lent %}given{% else %}taken{% endif %}</div><div class="value">{{ debt.amount|inr }}</div>{% if status.total_due != debt.amount %}<div class="small text-secondary">Total due {{ status.total_due|inr }}</div>{% endif %}</div></div>
+  <div class="col-md-3"><div class="card summary-card p-3 h-100"><div class="label">{% if debt.is_lent %}Received back{% else %}Paid back{% endif %}</div><div class="value accent-income">{{ status.total_paid|inr }}</div>{% if debt.has_emi_plan %}<div class="small text-secondary">{{ status.paid_installments }} of {{ debt.tenure_months }} installments</div>{% endif %}</div></div>
+  <div class="col-md-3"><div class="card summary-card p-3 h-100"><div class="label">Outstanding</div><div class="value">{{ status.outstanding|inr }}</div><div class="small text-secondary">{% if debt.is_lent %}They owe you{% else %}You owe{% endif %}</div></div></div>
+  <div class="col-md-3"><div class="card summary-card p-3 h-100"><div class="label">Status</div><div class="value"><span class="badge {{ status.state|emi_badge }}">{{ status.state }}</span></div>{% if status.next_due_date %}<div class="small text-secondary">Next: {{ status.next_amount|inr }} on {{ status.next_due_date }}</div>{% endif %}</div></div>
+</div>
+
+{% if status.overdue_amount %}
+<div class="alert alert-danger">{{ status.overdue_amount|inr }} overdue{% if status.overdue_rows %} across {{ status.overdue_rows|length }} installment{{ status.overdue_rows|length|pluralize }}{% endif %}.</div>
+{% endif %}
+{% if debt.notes %}<p class="text-secondary">{{ debt.notes|linebreaksbr }}</p>{% endif %}
+
+<div class="d-flex flex-wrap gap-2 mb-3">
+  {% if not status.settled %}
+  <a class="btn btn-primary" href="{% url 'finance:personal_debt_payment_create' debt.pk %}">{% if debt.is_lent %}Record money received{% else %}Record repayment{% endif %}</a>
+  {% endif %}
+  <a class="btn btn-outline-primary" href="{% url 'finance:personal_debt_edit' debt.pk %}">Edit</a>
+  <a class="btn btn-outline-danger" href="{% url 'finance:personal_debt_delete' debt.pk %}">Delete</a>
+  <a class="btn btn-outline-secondary" href="{% if debt_direction == 'lent' %}{% url 'finance:personal_lent_list' %}{% else %}{% url 'finance:personal_borrowed_list' %}{% endif %}">Back to {% if debt.is_lent %}money lent{% else %}money borrowed{% endif %}</a>
+</div>
+
+{% if status.schedule %}
+<div class="card card-soft p-3 mb-3">
+  <h2 class="h5">Installment schedule</h2>
+  <p class="small text-secondary">Payments are applied to the oldest installment first.</p>
+  <div class="table-responsive">
+    <table class="table align-middle mb-0">
+      <thead><tr><th>#</th><th>Month</th><th>Due date</th><th class="text-end">Installment</th><th class="text-end">Covered</th><th class="text-end">Balance</th><th>Status</th></tr></thead>
+      <tbody>
+        {% for row in status.schedule %}
+        <tr>
+          <td>{{ row.number }}</td>
+          <td>{{ row.month|date:"F Y" }}</td>
+          <td>{{ row.due_date }}</td>
+          <td class="text-end">{{ row.expected|inr }}</td>
+          <td class="text-end">{{ row.covered|inr }}</td>
+          <td class="text-end">{{ row.balance|inr }}</td>
+          <td><span class="badge {{ row.state|emi_badge }}">{{ row.state }}</span>{% if row.overdue and row.state != "Overdue" %} <span class="badge bg-danger-subtle text-danger-emphasis">Overdue</span>{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
+<div class="card card-soft p-3">
+  <h2 class="h5">{% if debt.is_lent %}Money received{% else %}Repayments made{% endif %}</h2>
+  <div class="table-responsive">
+    <table class="table align-middle mb-0">
+      <thead><tr><th>Date</th><th>Via</th><th>Notes</th><th class="text-end">Amount</th><th></th></tr></thead>
+      <tbody>
+        {% for p in status.payments %}
+        <tr>
+          <td>{{ p.date }}</td>
+          <td>{{ p.get_payment_mode_display }}</td>
+          <td>{{ p.notes|default:"—" }}</td>
+          <td class="text-end">{{ p.amount|inr }}</td>
+          <td class="text-end">
+            <form class="d-inline" method="post" action="{% url 'finance:personal_debt_payment_delete' p.pk %}" onsubmit="return confirm('Remove this payment?');">
+              {% csrf_token %}
+              <button class="btn btn-sm btn-outline-danger" type="submit">Remove</button>
+            </form>
+          </td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="5" class="text-secondary">Nothing recorded yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

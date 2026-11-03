@@ -7,6 +7,16 @@ from django.db import models
 from django.db.models import Q
 
 
+def month_sequence(first: date, count: int) -> list[date]:
+    """First day of `count` consecutive months starting at `first`."""
+    months = []
+    year, month = first.year, first.month
+    for _ in range(count):
+        months.append(date(year, month, 1))
+        year, month = (year + 1, 1) if month == 12 else (year, month + 1)
+    return months
+
+
 class CompanySettings(models.Model):
     company_name = models.CharField(max_length=200, default="Zuuvi")
     currency = models.CharField(max_length=8, default="INR")
@@ -180,12 +190,7 @@ class Loan(models.Model):
 
     def schedule_months(self):
         """First day of each EMI month, in order."""
-        months = []
-        year, month = self.first_emi_month.year, self.first_emi_month.month
-        for _ in range(self.tenure_months):
-            months.append(date(year, month, 1))
-            year, month = (year + 1, 1) if month == 12 else (year, month + 1)
-        return months
+        return month_sequence(self.first_emi_month, self.tenure_months)
 
     def due_date(self, emi_month):
         return emi_month.replace(day=self.emi_day)
@@ -379,6 +384,166 @@ class PersonalTransaction(models.Model):
             raise ValidationError({"category": "Expenses must use an expense category."})
         if self.entry_type == Transaction.CREDIT and category.category_type != Category.INCOME:
             raise ValidationError({"category": "Income must use an income category."})
+
+
+class PersonalDebt(models.Model):
+    """Money the owner lent to someone, or borrowed from a person or bank. Kept apart from income/expense."""
+
+    LENT = "lent"
+    BORROWED = "borrowed"
+    DIRECTION_CHOICES = [
+        (LENT, "I lent money (they owe me)"),
+        (BORROWED, "I borrowed money (I owe them)"),
+    ]
+
+    PERSON = "person"
+    BANK = "bank"
+    COUNTERPARTY_TYPE_CHOICES = [
+        (PERSON, "Person"),
+        (BANK, "Bank / institution"),
+    ]
+
+    direction = models.CharField(max_length=10, choices=DIRECTION_CHOICES)
+    counterparty = models.CharField(max_length=100, verbose_name="Person or bank")
+    counterparty_type = models.CharField(max_length=10, choices=COUNTERPARTY_TYPE_CHOICES, default=PERSON)
+    amount = models.DecimalField(
+        max_digits=14,
+        decimal_places=2,
+        validators=[MinValueValidator(Decimal("0.01"))],
+        help_text="Amount given or taken.",
+    )
+    start_date = models.DateField(help_text="Date the money was given or received.")
+    due_date = models.DateField(
+        null=True,
+        blank=True,
+        help_text="Optional. When the full amount should be returned (for one-time repayment).",
+    )
+    payment_mode = models.CharField(
+        max_length=10,
+        choices=PersonalTransaction.PAYMENT_MODE_CHOICES,
+        default=PersonalTransaction.UPI,
+    )
+    has_emi_plan = models.BooleanField(
+        default=False,
+        verbose_name="Repaid in monthly installments (EMI)",
+    )
+    installment_amount = models.DecimalField(
+        max_digits=14,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(Decimal("0.01"))],
+    )
+    installment_day = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(1), MaxValueValidator(28)],
+        help_text="Day of the month each installment is due (1–28).",
+    )
+    first_installment_month = models.DateField(null=True, blank=True)
+    tenure_months = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(1)],
+        help_text="Number of monthly installments.",
+    )
+    notes = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-start_date", "-id"]
+        constraints = [
+            models.CheckConstraint(condition=Q(amount__gt=0), name="personal_debt_amount_positive"),
+            models.CheckConstraint(
+                condition=Q(has_emi_plan=False)
+                | Q(
+                    installment_amount__gt=0,
+                    installment_day__gte=1,
+                    installment_day__lte=28,
+                    first_installment_month__isnull=False,
+                    tenure_months__gte=1,
+                ),
+                name="personal_debt_emi_fields",
+            ),
+        ]
+
+    def __str__(self):
+        verb = "Lent to" if self.direction == self.LENT else "Borrowed from"
+        return f"{verb} {self.counterparty} – {self.amount} on {self.start_date}"
+
+    @property
+    def is_lent(self):
+        return self.direction == self.LENT
+
+    def save(self, *args, **kwargs):
+        if self.first_installment_month:
+            self.first_installment_month = self.first_installment_month.replace(day=1)
+        if not self.has_emi_plan:
+            self.installment_amount = None
+            self.installment_day = None
+            self.first_installment_month = None
+            self.tenure_months = None
+        super().save(*args, **kwargs)
+
+    def clean(self):
+        if self.amount is not None and self.amount <= 0:
+            raise ValidationError({"amount": "Amount must be greater than zero."})
+        if self.due_date and self.start_date and self.due_date < self.start_date:
+            raise ValidationError({"due_date": "Due date can't be before the start date."})
+        if self.has_emi_plan:
+            errors = {}
+            for field in ["installment_amount", "installment_day", "first_installment_month", "tenure_months"]:
+                if getattr(self, field) in (None, ""):
+                    errors[field] = "Required for an installment plan."
+            if errors:
+                raise ValidationError(errors)
+
+    @property
+    def total_due(self) -> Decimal:
+        if self.has_emi_plan and self.installment_amount and self.tenure_months:
+            return self.installment_amount * self.tenure_months
+        return self.amount
+
+    def schedule_months(self):
+        if not self.has_emi_plan or not self.first_installment_month or not self.tenure_months:
+            return []
+        return month_sequence(self.first_installment_month, self.tenure_months)
+
+    def due_date_for(self, month: date) -> date:
+        return month.replace(day=self.installment_day)
+
+
+class PersonalDebtPayment(models.Model):
+    """Money received back (for a lent record) or paid back (for a borrowed record)."""
+
+    debt = models.ForeignKey(PersonalDebt, on_delete=models.CASCADE, related_name="payments")
+    date = models.DateField()
+    amount = models.DecimalField(
+        max_digits=14,
+        decimal_places=2,
+        validators=[MinValueValidator(Decimal("0.01"))],
+    )
+    payment_mode = models.CharField(
+        max_length=10,
+        choices=PersonalTransaction.PAYMENT_MODE_CHOICES,
+        default=PersonalTransaction.UPI,
+    )
+    notes = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["date", "id"]
+        constraints = [
+            models.CheckConstraint(condition=Q(amount__gt=0), name="personal_debt_payment_amount_positive"),
+        ]
+
+    def __str__(self):
+        return f"{self.date} {self.amount} ({self.debt.counterparty})"
+
+    def clean(self):
+        if self.amount is not None and self.amount <= 0:
+            raise ValidationError({"amount": "Amount must be greater than zero."})
 
 
 class Budget(models.Model):
