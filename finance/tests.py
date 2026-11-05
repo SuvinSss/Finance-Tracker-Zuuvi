@@ -11,6 +11,8 @@ from .models import (
     Budget,
     Category,
     CompanySettings,
+    CreditCard,
+    CreditCardEntry,
     Loan,
     PersonalCategory,
     PersonalDebt,
@@ -19,6 +21,10 @@ from .models import (
     Transaction,
 )
 from .services import (
+    CARD_NO_DUES,
+    LIMIT_NEAR,
+    LIMIT_OK,
+    LIMIT_OVER,
     DEBT_OPEN,
     DEBT_SETTLED,
     EMI_DUE,
@@ -33,6 +39,10 @@ from .services import (
     STATUS_WITHIN,
     account_balance,
     budget_vs_actual,
+    card_balance,
+    card_ledger,
+    card_status,
+    card_summary,
     create_transfer,
     dashboard_summary,
     debt_status,
@@ -909,3 +919,213 @@ class PersonalDebtTests(FinanceBaseTestCase):
         self.assertEqual(debt.direction, PersonalDebt.BORROWED)
         self.client.post(reverse("finance:personal_debt_delete", args=[debt.pk]))
         self.assertFalse(PersonalDebt.objects.exists())
+
+
+class CreditCardTests(FinanceBaseTestCase):
+    TODAY = date(2026, 11, 20)
+
+    def setUp(self):
+        super().setUp()
+        self.login()
+        self.p_shopping, _ = PersonalCategory.objects.get_or_create(name="Shopping", category_type=Category.EXPENSE)
+        self.card = CreditCard.objects.create(
+            name="HDFC Millennia",
+            issuer="HDFC",
+            last_four="1234",
+            credit_limit=Decimal("100000.00"),
+            bill_day=15,
+            due_day=5,
+            opening_balance=Decimal("0.00"),
+            opening_balance_date=date(2026, 9, 1),
+        )
+
+    def spend(self, amount, when=date(2026, 10, 10), card=None):
+        return PersonalTransaction.objects.create(
+            date=when,
+            entry_type=Transaction.DEBIT,
+            amount=Decimal(amount),
+            category=self.p_shopping,
+            payment_mode=PersonalTransaction.CARD,
+            credit_card=card or self.card,
+            description="Purchase",
+        )
+
+    def entry(self, amount, when, kind=CreditCardEntry.PAYMENT):
+        return CreditCardEntry.objects.create(card=self.card, kind=kind, date=when, amount=Decimal(amount))
+
+    def test_statement_and_due_dates(self):
+        self.assertEqual(self.card.statement_date(2026, 11), date(2026, 11, 15))
+        # Due day before bill day → due next month.
+        self.assertEqual(self.card.due_date_for(date(2026, 11, 15)), date(2026, 12, 5))
+        self.assertEqual(self.card.due_date_for(date(2026, 12, 15)), date(2027, 1, 5))
+        self.card.due_day = 28
+        self.assertEqual(self.card.due_date_for(date(2026, 11, 15)), date(2026, 11, 28))
+        # Day 31 clamps to the end of short months.
+        self.card.bill_day, self.card.due_day = 31, 20
+        self.assertEqual(self.card.statement_date(2027, 2), date(2027, 2, 28))
+        self.assertEqual(self.card.last_statement_date(date(2027, 3, 10)), date(2027, 2, 28))
+        self.assertEqual(self.card.due_date_for(date(2027, 2, 28)), date(2027, 3, 20))
+        self.card.bill_day = 15
+        self.assertEqual(self.card.last_statement_date(date(2026, 11, 14)), date(2026, 10, 15))
+        self.assertEqual(self.card.last_statement_date(date(2026, 11, 15)), date(2026, 11, 15))
+
+    def test_balance_math_and_opening_date_cutoff(self):
+        self.card.opening_balance = Decimal("5000.00")
+        self.card.save()
+        self.spend("3000", date(2026, 10, 10))
+        self.spend("999", date(2026, 8, 30))  # before opening date: ignored
+        self.entry("2000", date(2026, 10, 20))
+        self.entry("500", date(2026, 10, 21), kind=CreditCardEntry.REFUND)
+        self.assertEqual(card_balance(self.card), Decimal("5500.00"))
+        self.assertEqual(card_balance(self.card, date(2026, 10, 15)), Decimal("8000.00"))
+        status = card_status(self.card, self.TODAY, threshold=90)
+        self.assertEqual(status["available"], Decimal("94500.00"))
+        self.assertEqual(status["limit_state"], LIMIT_OK)
+
+    def test_bill_due_paid_and_overdue_states(self):
+        self.spend("10000", date(2026, 10, 10))  # billed on 15 Oct, due 5 Nov
+        self.spend("4000", date(2026, 11, 1))  # billed on 15 Nov, due 5 Dec
+        self.spend("700", date(2026, 11, 18))  # unbilled
+
+        status = card_status(self.card, date(2026, 11, 3), threshold=90)
+        self.assertEqual(status["last_statement"], date(2026, 10, 15))
+        self.assertEqual(status["amount_due"], Decimal("10000.00"))
+        self.assertEqual(status["due_date"], date(2026, 11, 5))
+        self.assertEqual(status["due_state"], EMI_DUE)
+
+        status = card_status(self.card, self.TODAY, threshold=90)
+        self.assertEqual(status["statement_balance"], Decimal("14000.00"))
+        self.assertEqual(status["amount_due"], Decimal("14000.00"))
+        self.assertEqual(status["due_date"], date(2026, 12, 5))
+        self.assertEqual(status["unbilled"], Decimal("700.00"))
+
+        overdue = card_status(self.card, date(2026, 12, 6), threshold=90)
+        self.assertEqual(overdue["due_state"], EMI_OVERDUE)
+
+        self.entry("14000", date(2026, 11, 25))
+        paid = card_status(self.card, date(2026, 11, 26), threshold=90)
+        self.assertEqual(paid["amount_due"], Decimal("0.00"))
+        self.assertEqual(paid["due_state"], EMI_PAID)
+        self.assertEqual(paid["outstanding"], Decimal("700.00"))
+
+        summary = card_summary(date(2026, 12, 6))
+        self.assertEqual(summary["overdue_count"], 0)
+
+    def test_no_bill_before_first_statement(self):
+        card = CreditCard.objects.create(
+            name="New card", credit_limit=Decimal("50000"), bill_day=15, due_day=5,
+            opening_balance_date=date(2026, 11, 16),
+        )
+        status = card_status(card, self.TODAY, threshold=90)
+        self.assertIsNone(status["last_statement"])
+        self.assertEqual(status["due_state"], CARD_NO_DUES)
+
+    def test_utilization_near_and_over_limit(self):
+        self.spend("95000")
+        self.assertEqual(card_status(self.card, self.TODAY, threshold=90)["limit_state"], LIMIT_NEAR)
+        self.spend("10000")
+        status = card_status(self.card, self.TODAY, threshold=90)
+        self.assertEqual(status["limit_state"], LIMIT_OVER)
+        self.assertEqual(status["available"], Decimal("-5000.00"))
+        self.assertEqual(status["utilization_bar"], Decimal("100"))
+
+    def test_spends_count_as_personal_expenses_but_payments_do_not(self):
+        self.spend("3000", date(2026, 10, 10))
+        self.entry("3000", date(2026, 10, 20))
+        totals = personal_totals(2026, 10)
+        self.assertEqual(totals["expenses"], Decimal("3000.00"))
+        self.assertEqual(totals["income"], Decimal("0.00"))
+        by_cat = personal_by_category(2026, 10)
+        self.assertEqual(by_cat[0]["category"], "Shopping")
+
+    def test_constraint_rejects_card_on_non_card_or_income(self):
+        from django.db import IntegrityError, transaction as db_transaction
+
+        with self.assertRaises(IntegrityError), db_transaction.atomic():
+            PersonalTransaction.objects.create(
+                date=date(2026, 10, 10), entry_type=Transaction.DEBIT, amount=Decimal("10"),
+                category=self.p_shopping, payment_mode=PersonalTransaction.UPI,
+                credit_card=self.card, description="x",
+            )
+
+    def test_ledger_running_balance(self):
+        self.spend("1000", date(2026, 10, 1))
+        self.entry("400", date(2026, 10, 5))
+        self.spend("200", date(2026, 10, 7))
+        self.assertEqual([r["balance"] for r in card_ledger(self.card)],
+                         [Decimal("1000.00"), Decimal("600.00"), Decimal("800.00")])
+
+    def test_create_card_and_add_each_transaction_kind(self):
+        response = self.client.post(
+            reverse("finance:personal_card_create"),
+            {
+                "name": "SBI SimplySave", "issuer": "SBI", "last_four": "9876",
+                "credit_limit": "50000", "bill_day": "20", "due_day": "10",
+                "opening_balance": "0", "opening_balance_date": "2026-10-01", "is_active": "on",
+            },
+        )
+        card = CreditCard.objects.get(name="SBI SimplySave")
+        self.assertRedirects(response, reverse("finance:personal_card_detail", args=[card.pk]))
+        url = reverse("finance:personal_card_txn_create", args=[card.pk])
+
+        self.client.post(url, {"kind": "spend", "date": "2026-10-05", "amount": "2500",
+                               "category": self.p_shopping.pk, "description": "Shoes"})
+        spend = PersonalTransaction.objects.get(credit_card=card)
+        self.assertEqual(spend.payment_mode, PersonalTransaction.CARD)
+        self.assertEqual(spend.entry_type, Transaction.DEBIT)
+
+        self.client.post(url, {"kind": "payment", "date": "2026-10-25", "amount": "2000"})
+        self.client.post(url, {"kind": "refund", "date": "2026-10-26", "amount": "100"})
+        self.assertEqual(card.entries.count(), 2)
+        self.assertEqual(card_balance(card), Decimal("400.00"))
+
+        # Spend without category is rejected; date before opening is rejected.
+        response = self.client.post(url, {"kind": "spend", "date": "2026-10-05", "amount": "10", "description": "x"})
+        self.assertContains(response, "Pick an expense category")
+        response = self.client.post(url, {"kind": "payment", "date": "2026-09-05", "amount": "10"})
+        self.assertContains(response, "opening date")
+
+        for name in ["personal_card_list", "personal_dashboard"]:
+            page = self.client.get(reverse(f"finance:{name}"))
+            self.assertContains(page, "SBI SimplySave")
+        detail = self.client.get(reverse("finance:personal_card_detail", args=[card.pk]))
+        self.assertContains(detail, "Shoes")
+        self.assertContains(detail, f'active" href="{reverse("finance:personal_card_list")}"')
+
+    def test_personal_transaction_form_links_card(self):
+        self.client.post(
+            reverse("finance:personal_transaction_create"),
+            {"date": "2026-10-10", "entry_type": "debit", "amount": "800", "category": self.p_shopping.pk,
+             "payment_mode": "card", "credit_card": self.card.pk, "description": "Groceries"},
+        )
+        self.assertEqual(self.card.spends.get().description, "Groceries")
+        # A stale card selection on a UPI entry is dropped rather than saved.
+        self.client.post(
+            reverse("finance:personal_transaction_create"),
+            {"date": "2026-10-10", "entry_type": "debit", "amount": "50", "category": self.p_shopping.pk,
+             "payment_mode": "upi", "credit_card": self.card.pk, "description": "Tea"},
+        )
+        self.assertIsNone(PersonalTransaction.objects.get(description="Tea").credit_card)
+
+    def test_delete_blocked_when_in_use_and_entry_delete(self):
+        entry = self.entry("100", date(2026, 10, 1))
+        response = self.client.post(reverse("finance:personal_card_delete", args=[self.card.pk]))
+        self.assertTrue(CreditCard.objects.filter(pk=self.card.pk).exists())
+        self.assertRedirects(response, reverse("finance:personal_card_detail", args=[self.card.pk]))
+        self.client.post(reverse("finance:personal_card_entry_delete", args=[entry.pk]))
+        self.client.post(reverse("finance:personal_card_delete", args=[self.card.pk]))
+        self.assertFalse(CreditCard.objects.exists())
+
+    def test_spend_edit_returns_to_card(self):
+        spend = self.spend("100")
+        detail = reverse("finance:personal_card_detail", args=[self.card.pk])
+        response = self.client.post(
+            f"{reverse('finance:personal_transaction_edit', args=[spend.pk])}?next={detail}",
+            {"date": "2026-10-10", "entry_type": "debit", "amount": "150", "category": self.p_shopping.pk,
+             "payment_mode": "card", "credit_card": self.card.pk, "description": "Purchase", "next": detail},
+        )
+        self.assertRedirects(response, detail)
+        response = self.client.post(
+            reverse("finance:personal_transaction_delete", args=[spend.pk]), {"next": "https://evil.example/"}
+        )
+        self.assertRedirects(response, reverse("finance:personal_transaction_list"))

@@ -10,6 +10,8 @@ from .models import (
     Budget,
     Category,
     CompanySettings,
+    CreditCard,
+    CreditCardEntry,
     Loan,
     PersonalCategory,
     PersonalDebt,
@@ -370,17 +372,27 @@ class PersonalCategoryForm(forms.ModelForm):
         return category_type
 
 
+def _check_card_date(card, txn_date):
+    if card and txn_date and txn_date < card.opening_balance_date:
+        return (
+            f"This card's transactions start on {card.opening_balance_date:%d %b %Y} (its opening date). "
+            "Use a later date or change the card's opening date."
+        )
+    return None
+
+
 class PersonalTransactionForm(forms.ModelForm):
     class Meta:
         model = PersonalTransaction
-        fields = ["date", "entry_type", "amount", "category", "payment_mode", "description", "notes"]
-        labels = {"entry_type": "Type"}
+        fields = ["date", "entry_type", "amount", "category", "payment_mode", "credit_card", "description", "notes"]
+        labels = {"entry_type": "Type", "credit_card": "Credit card"}
         widgets = {
             "date": forms.DateInput(attrs={"class": "form-control", "type": "date"}),
             "entry_type": forms.Select(attrs={"class": "form-select"}),
             "amount": forms.NumberInput(attrs={"class": "form-control", "step": "0.01", "min": "0.01"}),
             "category": forms.Select(attrs={"class": "form-select"}),
             "payment_mode": forms.Select(attrs={"class": "form-select"}),
+            "credit_card": forms.Select(attrs={"class": "form-select"}),
             "description": forms.TextInput(attrs={"class": "form-control"}),
             "notes": forms.Textarea(attrs={"class": "form-control", "rows": 3}),
         }
@@ -392,6 +404,11 @@ class PersonalTransactionForm(forms.ModelForm):
         )
         if self.instance and self.instance.pk and self.instance.category_id:
             self.fields["category"].queryset |= PersonalCategory.objects.filter(pk=self.instance.category_id)
+        cards = CreditCard.objects.filter(is_active=True)
+        if self.instance and self.instance.pk and self.instance.credit_card_id:
+            cards |= CreditCard.objects.filter(pk=self.instance.credit_card_id)
+        self.fields["credit_card"].queryset = cards.order_by("name")
+        self.fields["credit_card"].empty_label = "Not a credit card (debit card etc.)"
 
     def clean_amount(self):
         amount = self.cleaned_data["amount"]
@@ -407,6 +424,172 @@ class PersonalTransactionForm(forms.ModelForm):
             self.add_error("category", "Expenses must use an expense category.")
         if category and entry_type == Transaction.CREDIT and category.category_type != Category.INCOME:
             self.add_error("category", "Income must use an income category.")
+        card = cleaned.get("credit_card")
+        if card:
+            if entry_type != Transaction.DEBIT or cleaned.get("payment_mode") != PersonalTransaction.CARD:
+                # The card picker is hidden unless this is a card expense, so drop a stale selection.
+                cleaned["credit_card"] = None
+            elif error := _check_card_date(card, cleaned.get("date")):
+                self.add_error("date", error)
+        return cleaned
+
+
+class CreditCardForm(forms.ModelForm):
+    class Meta:
+        model = CreditCard
+        fields = [
+            "name",
+            "issuer",
+            "last_four",
+            "credit_limit",
+            "bill_day",
+            "due_day",
+            "opening_balance",
+            "opening_balance_date",
+            "notes",
+            "is_active",
+        ]
+        widgets = {
+            "name": forms.TextInput(attrs={"class": "form-control"}),
+            "issuer": forms.TextInput(attrs={"class": "form-control"}),
+            "last_four": forms.TextInput(
+                attrs={"class": "form-control", "inputmode": "numeric", "maxlength": "4", "autocomplete": "off"}
+            ),
+            "credit_limit": forms.NumberInput(attrs={"class": "form-control", "step": "0.01", "min": "0.01"}),
+            "bill_day": forms.NumberInput(attrs={"class": "form-control", "min": "1", "max": "31"}),
+            "due_day": forms.NumberInput(attrs={"class": "form-control", "min": "1", "max": "31"}),
+            "opening_balance": forms.NumberInput(attrs={"class": "form-control", "step": "0.01", "min": "0"}),
+            "opening_balance_date": forms.DateInput(attrs={"class": "form-control", "type": "date"}),
+            "notes": forms.Textarea(attrs={"class": "form-control", "rows": 3}),
+            "is_active": forms.CheckboxInput(attrs={"class": "form-check-input"}),
+        }
+
+    def clean_credit_limit(self):
+        limit = self.cleaned_data["credit_limit"]
+        if limit is None or limit <= 0:
+            raise ValidationError("Credit limit must be greater than zero.")
+        return limit
+
+    def clean(self):
+        cleaned = super().clean()
+        opening_date = cleaned.get("opening_balance_date")
+        if self.instance.pk and opening_date and opening_date > self.instance.opening_balance_date:
+            earlier = (
+                self.instance.spends.filter(date__lt=opening_date).exists()
+                or self.instance.entries.filter(date__lt=opening_date).exists()
+            )
+            if earlier:
+                self.add_error(
+                    "opening_balance_date",
+                    "Some of this card's transactions are dated before this. Move or delete them first.",
+                )
+        return cleaned
+
+
+class CreditCardTransactionForm(forms.Form):
+    SPEND = "spend"
+    KIND_CHOICES = [(SPEND, "Spend (purchase)"), *CreditCardEntry.KIND_CHOICES]
+
+    kind = forms.ChoiceField(
+        label="Type",
+        choices=KIND_CHOICES,
+        widget=forms.Select(attrs={"class": "form-select"}),
+        help_text=(
+            "Spends are counted as personal expenses. Bill payments and refunds only reduce the card balance. "
+            "To reverse a whole purchase, edit or delete the spend instead."
+        ),
+    )
+    date = forms.DateField(widget=forms.DateInput(attrs={"class": "form-control", "type": "date"}))
+    amount = forms.DecimalField(
+        max_digits=14,
+        decimal_places=2,
+        widget=forms.NumberInput(attrs={"class": "form-control", "step": "0.01", "min": "0.01"}),
+    )
+    category = forms.ModelChoiceField(
+        queryset=PersonalCategory.objects.none(),
+        required=False,
+        label="Expense category",
+        widget=forms.Select(attrs={"class": "form-select"}),
+    )
+    description = forms.CharField(
+        max_length=255,
+        required=False,
+        widget=forms.TextInput(attrs={"class": "form-control"}),
+    )
+    notes = forms.CharField(required=False, widget=forms.Textarea(attrs={"class": "form-control", "rows": 3}))
+
+    spend_only_fields = ["category"]
+
+    def __init__(self, *args, card, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.card = card
+        self.fields["category"].queryset = PersonalCategory.objects.filter(
+            is_active=True, category_type=Category.EXPENSE
+        ).order_by("name")
+
+    def clean_amount(self):
+        amount = self.cleaned_data["amount"]
+        if amount is None or amount <= 0:
+            raise ValidationError("Amount must be greater than zero.")
+        return amount
+
+    def clean(self):
+        cleaned = super().clean()
+        if error := _check_card_date(self.card, cleaned.get("date")):
+            self.add_error("date", error)
+        if cleaned.get("kind") == self.SPEND:
+            if not cleaned.get("category"):
+                self.add_error("category", "Pick an expense category for the spend.")
+            if not cleaned.get("description"):
+                self.add_error("description", "Describe what you bought.")
+        return cleaned
+
+    def save(self):
+        data = self.cleaned_data
+        if data["kind"] == self.SPEND:
+            return PersonalTransaction.objects.create(
+                date=data["date"],
+                entry_type=Transaction.DEBIT,
+                amount=data["amount"],
+                category=data["category"],
+                payment_mode=PersonalTransaction.CARD,
+                credit_card=self.card,
+                description=data["description"],
+                notes=data["notes"],
+            )
+        return CreditCardEntry.objects.create(
+            card=self.card,
+            kind=data["kind"],
+            date=data["date"],
+            amount=data["amount"],
+            description=data["description"],
+            notes=data["notes"],
+        )
+
+
+class CreditCardEntryForm(forms.ModelForm):
+    class Meta:
+        model = CreditCardEntry
+        fields = ["kind", "date", "amount", "description", "notes"]
+        labels = {"kind": "Type"}
+        widgets = {
+            "kind": forms.Select(attrs={"class": "form-select"}),
+            "date": forms.DateInput(attrs={"class": "form-control", "type": "date"}),
+            "amount": forms.NumberInput(attrs={"class": "form-control", "step": "0.01", "min": "0.01"}),
+            "description": forms.TextInput(attrs={"class": "form-control"}),
+            "notes": forms.Textarea(attrs={"class": "form-control", "rows": 3}),
+        }
+
+    def clean_amount(self):
+        amount = self.cleaned_data["amount"]
+        if amount is None or amount <= 0:
+            raise ValidationError("Amount must be greater than zero.")
+        return amount
+
+    def clean(self):
+        cleaned = super().clean()
+        if error := _check_card_date(self.instance.card, cleaned.get("date")):
+            self.add_error("date", error)
         return cleaned
 
 

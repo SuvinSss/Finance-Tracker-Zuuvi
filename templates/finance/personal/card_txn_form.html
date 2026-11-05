@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% load money_tags %}
+{% block title %}{{ title }}{% endblock %}
+{% block heading %}{{ title }}{% endblock %}
+{% block subtitle %}{{ card.name }} · limit {{ card.credit_limit|inr }}{% endblock %}
+{% block period %}{% endblock %}
+
+{% block content %}
+<div class="card card-soft p-4" style="max-width: 720px;">
+  <form method="post" novalidate>
+    {% csrf_token %}
+    {% if form.non_field_errors %}<div class="alert alert-danger">{{ form.non_field_errors }}</div>{% endif %}
+    {% for field in form %}
+      <div class="mb-3" {% if field.name in form.spend_only_fields %}data-spend-row{% endif %}>
+        <label class="form-label" for="{{ field.id_for_label }}">{{ field.label }}</label>
+        {{ field }}
+        {% if field.help_text %}<div class="form-text">{{ field.help_text }}</div>{% endif %}
+        {% if field.errors %}<div class="text-danger small">{{ field.errors }}</div>{% endif %}
+      </div>
+    {% endfor %}
+    <button class="btn btn-primary" type="submit">Save</button>
+    {% if not entry %}<button class="btn btn-outline-primary" type="submit" name="save_add" value="1">Save &amp; add another</button>{% endif %}
+    <a class="btn btn-outline-secondary" href="{% url 'finance:personal_card_detail' card.pk %}">Cancel</a>
+  </form>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+  (function () {
+    const kind = document.getElementById("id_kind");
+    const rows = document.querySelectorAll("[data-spend-row]");
+    if (!kind || !rows.length) return;
+    function sync() { rows.forEach((row) => { row.style.display = kind.value === "spend" ? "" : "none"; }); }
+    kind.addEventListener("change", sync);
+    sync();
+  })();
+</script>
+{% endblock %}

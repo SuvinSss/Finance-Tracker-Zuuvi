@@ -8,7 +8,8 @@ from django.core.paginator import Paginator
 from django.db.models import Q, Sum
 from django.http import Http404, HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
-from django.urls import reverse_lazy
+from django.urls import reverse, reverse_lazy
+from django.utils.http import url_has_allowed_host_and_scheme
 from django.utils import timezone
 from django.views.decorators.http import require_POST
 
@@ -16,6 +17,9 @@ from .forms import (
     AccountForm,
     BudgetForm,
     CategoryForm,
+    CreditCardEntryForm,
+    CreditCardForm,
+    CreditCardTransactionForm,
     EmiPaymentForm,
     LoanForm,
     PersonalCategoryForm,
@@ -32,6 +36,8 @@ from .models import (
     Budget,
     Category,
     CompanySettings,
+    CreditCard,
+    CreditCardEntry,
     Loan,
     PersonalCategory,
     PersonalDebt,
@@ -44,6 +50,10 @@ from .period import get_selected_period, month_name
 from .services import (
     account_movement,
     budget_vs_actual,
+    card_ledger,
+    card_statements,
+    card_status,
+    card_summary,
     create_transfer,
     dashboard_summary,
     debt_status,
@@ -651,8 +661,9 @@ def personal_dashboard(request):
             "year_totals": personal_totals(year),
             "by_cat": by_cat,
             "income_by_cat": personal_by_category(year, month, entry_type=Transaction.CREDIT),
-            "recent": PersonalTransaction.objects.select_related("category")[:10],
+            "recent": PersonalTransaction.objects.select_related("category", "credit_card")[:10],
             "debts": debt_summary(),
+            "cards": card_summary(),
             "chart": {
                 "cat_labels": [row["category"] for row in by_cat],
                 "cat_values": [str(row["total"]) for row in by_cat],
@@ -666,8 +677,9 @@ def personal_dashboard(request):
 
 @login_required
 def personal_transaction_list(request):
-    qs = PersonalTransaction.objects.select_related("category")
+    qs = PersonalTransaction.objects.select_related("category", "credit_card")
     q = request.GET.get("q", "").strip()
+    card_id = request.GET.get("card", "")
     entry_type = request.GET.get("entry_type", "")
     category_id = request.GET.get("category", "")
     payment_mode = request.GET.get("payment_mode", "")
@@ -691,6 +703,8 @@ def personal_transaction_list(request):
         qs = qs.filter(category_id=category_id)
     if payment_mode:
         qs = qs.filter(payment_mode=payment_mode)
+    if card_id:
+        qs = qs.filter(credit_card_id=card_id)
 
     allowed_sorts = {"date", "-date", "amount", "-amount", "description", "-description"}
     qs = qs.order_by(sort if sort in allowed_sorts else "-date", "-id")
@@ -698,13 +712,14 @@ def personal_transaction_list(request):
     if request.GET.get("export") == "csv":
         return _csv_response(
             "personal-transactions.csv",
-            ["Date", "Type", "Category", "Payment mode", "Description", "Amount", "Notes"],
+            ["Date", "Type", "Category", "Payment mode", "Credit card", "Description", "Amount", "Notes"],
             [
                 [
                     txn.date,
                     "Income" if txn.entry_type == Transaction.CREDIT else "Expense",
                     txn.category.name,
                     txn.get_payment_mode_display(),
+                    txn.credit_card.name if txn.credit_card else "",
                     txn.description,
                     txn.amount,
                     txn.notes,
@@ -736,6 +751,8 @@ def personal_transaction_list(request):
             "sort": sort,
             "categories": PersonalCategory.objects.filter(is_active=True),
             "payment_modes": PersonalTransaction.PAYMENT_MODE_CHOICES,
+            "cards": CreditCard.objects.all(),
+            "card_id": card_id,
             "showing_all": request.GET.get("all") == "1",
             "filtered_income": as_money(totals["income"]),
             "filtered_expenses": as_money(totals["expenses"]),
@@ -757,29 +774,42 @@ def personal_transaction_create(request):
     return render(request, "finance/personal/transaction_form.html", {"form": form, "title": "Add personal entry"})
 
 
+def _safe_next(request, default):
+    target = request.POST.get("next") or request.GET.get("next")
+    if target and url_has_allowed_host_and_scheme(target, allowed_hosts={request.get_host()}):
+        return target
+    return default
+
+
 @login_required
 def personal_transaction_edit(request, pk):
     txn = get_object_or_404(PersonalTransaction, pk=pk)
     form = PersonalTransactionForm(request.POST or None, instance=txn)
+    next_url = _safe_next(request, reverse("finance:personal_transaction_list"))
     if request.method == "POST" and form.is_valid():
         form.save()
         messages.success(request, "Personal entry updated.")
-        return redirect("finance:personal_transaction_list")
+        return redirect(next_url)
     return render(
         request,
         "finance/personal/transaction_form.html",
-        {"form": form, "title": "Edit personal entry", "txn": txn},
+        {"form": form, "title": "Edit personal entry", "txn": txn, "next_url": next_url},
     )
 
 
 @login_required
 def personal_transaction_delete(request, pk):
     txn = get_object_or_404(PersonalTransaction, pk=pk)
+    next_url = _safe_next(request, reverse("finance:personal_transaction_list"))
     if request.method == "POST":
         txn.delete()
         messages.success(request, "Personal entry deleted.")
-        return redirect("finance:personal_transaction_list")
-    return render(request, "finance/confirm_delete.html", {"object": txn, "object_type": "personal entry"})
+        return redirect(next_url)
+    return render(
+        request,
+        "finance/confirm_delete.html",
+        {"object": txn, "object_type": "personal entry", "next_url": next_url},
+    )
 
 
 @login_required
@@ -993,3 +1023,132 @@ def personal_debt_payment_delete(request, pk):
     payment.delete()
     messages.success(request, "Payment removed. The outstanding balance has been updated.")
     return redirect("finance:personal_debt_detail", pk=debt_pk)
+
+
+# --- Credit cards (personal) ---------------------------------------------------
+
+
+@login_required
+def personal_card_list(request):
+    statuses = [card_status(card) for card in CreditCard.objects.all()]
+    active = [s for s in statuses if s["card"].is_active]
+    return render(
+        request,
+        "finance/personal/card_list.html",
+        {"statuses": statuses, "summary": card_summary(statuses=active)},
+    )
+
+
+@login_required
+def personal_card_create(request):
+    form = CreditCardForm(request.POST or None, initial={"opening_balance_date": timezone.localdate()})
+    if request.method == "POST" and form.is_valid():
+        card = form.save()
+        messages.success(request, "Credit card added.")
+        return redirect("finance:personal_card_detail", pk=card.pk)
+    return render(request, "finance/personal/card_form.html", {"form": form, "title": "Add credit card"})
+
+
+@login_required
+def personal_card_edit(request, pk):
+    card = get_object_or_404(CreditCard, pk=pk)
+    form = CreditCardForm(request.POST or None, instance=card)
+    if request.method == "POST" and form.is_valid():
+        form.save()
+        messages.success(request, "Credit card updated.")
+        return redirect("finance:personal_card_detail", pk=card.pk)
+    return render(
+        request,
+        "finance/personal/card_form.html",
+        {"form": form, "title": f"Edit {card.name}", "card": card},
+    )
+
+
+@login_required
+def personal_card_detail(request, pk):
+    card = get_object_or_404(CreditCard, pk=pk)
+    ledger = card_ledger(card)
+    if request.GET.get("export") == "csv":
+        return _csv_response(
+            f"credit-card-{card.pk}.csv",
+            ["Date", "Type", "Description", "Category", "Amount", "Outstanding after"],
+            [
+                [row["date"], row["label"], row["description"], row["category"], row["signed"], row["balance"]]
+                for row in ledger
+            ],
+        )
+    return render(
+        request,
+        "finance/personal/card_detail.html",
+        {
+            "card": card,
+            "status": card_status(card),
+            "statements": card_statements(card),
+            "ledger": list(reversed(ledger)),
+            "detail_url": reverse("finance:personal_card_detail", args=[card.pk]),
+        },
+    )
+
+
+@login_required
+def personal_card_delete(request, pk):
+    card = get_object_or_404(CreditCard, pk=pk)
+    if card.is_in_use():
+        messages.error(
+            request,
+            "This card has transactions, so it can't be deleted. Edit it and untick Active to hide it instead.",
+        )
+        return redirect("finance:personal_card_detail", pk=card.pk)
+    if request.method == "POST":
+        card.delete()
+        messages.success(request, "Credit card deleted.")
+        return redirect("finance:personal_card_list")
+    return render(request, "finance/confirm_delete.html", {"object": card, "object_type": "credit card"})
+
+
+@login_required
+def personal_card_txn_create(request, pk):
+    card = get_object_or_404(CreditCard, pk=pk)
+    kind = request.GET.get("kind", CreditCardTransactionForm.SPEND)
+    initial = {"date": timezone.localdate(), "kind": kind}
+    if kind == CreditCardEntry.PAYMENT:
+        status = card_status(card)
+        initial["amount"] = status["amount_due"] or status["outstanding"] or None
+        initial["description"] = "Bill payment"
+    form = CreditCardTransactionForm(request.POST or None, card=card, initial=initial)
+    if request.method == "POST" and form.is_valid():
+        form.save()
+        messages.success(request, f"{dict(form.KIND_CHOICES)[form.cleaned_data['kind']]} recorded.")
+        if "save_add" in request.POST:
+            return redirect(f"{reverse('finance:personal_card_txn_create', args=[card.pk])}?kind={form.cleaned_data['kind']}")
+        return redirect("finance:personal_card_detail", pk=card.pk)
+    return render(
+        request,
+        "finance/personal/card_txn_form.html",
+        {"form": form, "card": card, "title": f"Add transaction · {card.name}"},
+    )
+
+
+@login_required
+def personal_card_entry_edit(request, pk):
+    entry = get_object_or_404(CreditCardEntry.objects.select_related("card"), pk=pk)
+    form = CreditCardEntryForm(request.POST or None, instance=entry)
+    if request.method == "POST" and form.is_valid():
+        form.save()
+        messages.success(request, "Card entry updated.")
+        return redirect("finance:personal_card_detail", pk=entry.card_id)
+    return render(
+        request,
+        "finance/personal/card_txn_form.html",
+        {"form": form, "card": entry.card, "entry": entry, "title": f"Edit {entry.get_kind_display().lower()}"},
+    )
+
+
+@login_required
+@require_POST
+def personal_card_entry_delete(request, pk):
+    entry = get_object_or_404(CreditCardEntry, pk=pk)
+    card_pk = entry.card_id
+    entry.delete()
+    messages.success(request, "Card entry removed. The outstanding balance has been updated.")
+    return redirect("finance:personal_card_detail", pk=card_pk)

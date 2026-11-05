@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from uuid import uuid4
 
@@ -11,6 +11,8 @@ from .models import (
     Budget,
     Category,
     CompanySettings,
+    CreditCard,
+    CreditCardEntry,
     Loan,
     PersonalDebt,
     PersonalTransaction,
@@ -605,6 +607,170 @@ def debt_summary(today: date | None = None, statuses: list[dict] | None = None, 
         "open_count": sum(1 for s in statuses if not s["settled"]),
         "total_paid": as_money(sum((s["total_paid"] for s in statuses), ZERO)),
     }
+
+
+# --- Credit cards (personal): spends are personal expenses; payments/refunds only reduce the card balance
+
+CARD_NO_DUES = "No dues"
+LIMIT_OK = "Within limit"
+LIMIT_NEAR = "Near limit"
+LIMIT_OVER = "Over limit"
+
+
+def _card_spends(card: CreditCard):
+    return card.spends.filter(date__gte=card.opening_balance_date)
+
+
+def _card_entries(card: CreditCard):
+    return card.entries.filter(date__gte=card.opening_balance_date)
+
+
+def card_balance(card: CreditCard, as_of: date | None = None) -> Decimal:
+    """Outstanding = opening outstanding + spends − bill payments − refunds, up to `as_of` (inclusive)."""
+    spends, entries = _card_spends(card), _card_entries(card)
+    if as_of is not None:
+        if as_of < card.opening_balance_date:
+            return ZERO
+        spends, entries = spends.filter(date__lte=as_of), entries.filter(date__lte=as_of)
+    return as_money(card.opening_balance + _sum(spends) - _sum(entries))
+
+
+def card_status(card: CreditCard, today: date | None = None, threshold: int | None = None) -> dict:
+    today = today or timezone.localdate()
+    if threshold is None:
+        threshold = CompanySettings.get_solo().budget_warning_threshold
+
+    outstanding = card_balance(card)
+    available = as_money(card.credit_limit - outstanding)
+    _remaining, utilization, budget_state = utilization_status(card.credit_limit, max(outstanding, ZERO), threshold)
+    if budget_state == STATUS_OVER:
+        limit_state = LIMIT_OVER
+    elif budget_state in {STATUS_NEAR, STATUS_FULL}:
+        limit_state = LIMIT_NEAR
+    else:
+        limit_state = LIMIT_OK
+
+    last_statement = card.last_statement_date(today)
+    next_statement = card.next_statement_date(last_statement)
+    has_statement = last_statement >= card.opening_balance_date
+    if has_statement:
+        statement_balance = card_balance(card, last_statement)
+        credits_since = _sum(_card_entries(card).filter(date__gt=last_statement, date__lte=today))
+        amount_due = max(as_money(statement_balance - credits_since), ZERO)
+        due_date = card.due_date_for(last_statement)
+        if amount_due > 0:
+            due_state = EMI_OVERDUE if due_date < today else EMI_DUE
+        elif statement_balance > 0:
+            due_state = EMI_PAID
+        else:
+            due_state = CARD_NO_DUES
+    else:
+        statement_balance = amount_due = ZERO
+        due_date = None
+        due_state = CARD_NO_DUES
+
+    unbilled = _sum(_card_spends(card).filter(date__gt=last_statement, date__lte=today))
+    return {
+        "card": card,
+        "outstanding": outstanding,
+        "available": available,
+        "utilization": utilization,
+        "utilization_bar": min(utilization, Decimal("100")),
+        "limit_state": limit_state,
+        "last_statement": last_statement if has_statement else None,
+        "next_statement": next_statement,
+        "statement_balance": statement_balance,
+        "amount_due": amount_due,
+        "due_date": due_date,
+        "due_state": due_state,
+        "unbilled": unbilled,
+    }
+
+
+def card_summary(today: date | None = None, statuses: list[dict] | None = None) -> dict:
+    today = today or timezone.localdate()
+    if statuses is None:
+        threshold = CompanySettings.get_solo().budget_warning_threshold
+        statuses = [card_status(c, today, threshold) for c in CreditCard.objects.filter(is_active=True)]
+    attention = [s for s in statuses if s["due_state"] in {EMI_DUE, EMI_OVERDUE}]
+    attention.sort(key=lambda s: (s["due_state"] != EMI_OVERDUE, s["due_date"]))
+    total_limit = as_money(sum((s["card"].credit_limit for s in statuses), ZERO))
+    total_outstanding = as_money(sum((s["outstanding"] for s in statuses), ZERO))
+    return {
+        "count": len(statuses),
+        "total_limit": total_limit,
+        "total_outstanding": total_outstanding,
+        "total_available": as_money(total_limit - total_outstanding),
+        "total_due": as_money(sum((s["amount_due"] for s in attention), ZERO)),
+        "attention": attention,
+        "overdue_count": sum(1 for s in attention if s["due_state"] == EMI_OVERDUE),
+    }
+
+
+def card_ledger(card: CreditCard) -> list[dict]:
+    """Spends, payments and refunds since the opening date, oldest first, with the running outstanding."""
+    rows = []
+    for spend in _card_spends(card).select_related("category"):
+        rows.append(
+            {
+                "date": spend.date,
+                "kind": "spend",
+                "label": "Spend",
+                "description": spend.description,
+                "category": spend.category.name,
+                "amount": spend.amount,
+                "signed": spend.amount,
+                "spend": spend,
+                "entry": None,
+                "sort": (spend.date, spend.created_at),
+            }
+        )
+    for entry in _card_entries(card):
+        rows.append(
+            {
+                "date": entry.date,
+                "kind": entry.kind,
+                "label": entry.get_kind_display(),
+                "description": entry.description or entry.get_kind_display(),
+                "category": "",
+                "amount": entry.amount,
+                "signed": -entry.amount,
+                "spend": None,
+                "entry": entry,
+                "sort": (entry.date, entry.created_at),
+            }
+        )
+    rows.sort(key=lambda r: r["sort"])
+    balance = as_money(card.opening_balance)
+    for row in rows:
+        balance = as_money(balance + row["signed"])
+        row["balance"] = balance
+    return rows
+
+
+def card_statements(card: CreditCard, today: date | None = None, count: int = 6) -> list[dict]:
+    """Recent billing cycles (newest first): spends, credits and the closing bill amount."""
+    today = today or timezone.localdate()
+    statements = []
+    end = card.last_statement_date(today)
+    for _ in range(count):
+        if end < card.opening_balance_date:
+            break
+        start = card.last_statement_date(end - timedelta(days=1))
+        spends = _card_spends(card).filter(date__gt=start, date__lte=end)
+        credits = _card_entries(card).filter(date__gt=start, date__lte=end)
+        statements.append(
+            {
+                "start": max(start + timedelta(days=1), card.opening_balance_date),
+                "end": end,
+                "due_date": card.due_date_for(end),
+                "spends": _sum(spends),
+                "credits": _sum(credits),
+                "closing": card_balance(card, end),
+            }
+        )
+        end = start
+    return statements
 
 
 def year_choices():

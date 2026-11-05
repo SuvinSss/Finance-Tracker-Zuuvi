@@ -51,6 +51,17 @@
         {% endfor %}
       </select>
     </div>
+    {% if cards %}
+    <div class="col-md-2">
+      <label class="form-label" for="card">Credit card</label>
+      <select class="form-select" id="card" name="card">
+        <option value="">All</option>
+        {% for c in cards %}
+          <option value="{{ c.pk }}" {% if card_id|stringformat:"s" == c.pk|stringformat:"s" %}selected{% endif %}>{{ c.name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    {% endif %}
     <div class="col-md-2">
       <label class="form-label" for="sort">Sort</label>
       <select class="form-select" id="sort" name="sort">
@@ -97,7 +108,7 @@
           <td>{% if txn.entry_type == "credit" %}Income{% else %}Expense{% endif %}</td>
           <td>{{ txn.description }}{% if txn.notes %}<br><small class="text-secondary">{{ txn.notes|truncatechars:60 }}</small>{% endif %}</td>
           <td>{{ txn.category.name }}</td>
-          <td>{{ txn.get_payment_mode_display }}</td>
+          <td>{{ txn.get_payment_mode_display }}{% if txn.credit_card %}<br><a class="small" href="{% url 'finance:personal_card_detail' txn.credit_card_id %}">{{ txn.credit_card.name }}</a>{% endif %}</td>
           <td class="text-end {% if txn.entry_type == 'credit' %}accent-income{% endif %}">{{ txn.amount|inr }}</td>
           <td class="text-end text-nowrap">
             <a class="btn btn-sm btn-outline-secondary" href="{% url 'finance:personal_transaction_edit' txn.pk %}">Edit</a>

@@ -5,6 +5,8 @@ from .models import (
     Budget,
     Category,
     CompanySettings,
+    CreditCard,
+    CreditCardEntry,
     Loan,
     PersonalCategory,
     PersonalDebt,
@@ -75,3 +77,16 @@ class PersonalDebtAdmin(admin.ModelAdmin):
     list_filter = ("direction", "counterparty_type", "has_emi_plan")
     search_fields = ("counterparty", "notes")
     inlines = [PersonalDebtPaymentInline]
+
+
+class CreditCardEntryInline(admin.TabularInline):
+    model = CreditCardEntry
+    extra = 0
+
+
+@admin.register(CreditCard)
+class CreditCardAdmin(admin.ModelAdmin):
+    list_display = ("name", "issuer", "last_four", "credit_limit", "bill_day", "due_day", "is_active")
+    list_filter = ("is_active",)
+    search_fields = ("name", "issuer")
+    inlines = [CreditCardEntryInline]

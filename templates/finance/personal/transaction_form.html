@@ -8,9 +8,10 @@
 <div class="card card-soft p-4" style="max-width: 760px;">
   <form method="post" novalidate>
     {% csrf_token %}
+    {% if next_url %}<input type="hidden" name="next" value="{{ next_url }}">{% endif %}
     {{ form.non_field_errors }}
     {% for field in form %}
-      <div class="mb-3">
+      <div class="mb-3" {% if field.name == "credit_card" %}data-card-row{% endif %}>
         <label class="form-label" for="{{ field.id_for_label }}">{{ field.label }}</label>
         {{ field }}
         {% if field.help_text %}<div class="form-text">{{ field.help_text }}</div>{% endif %}
@@ -19,7 +20,22 @@
     {% endfor %}
     <button class="btn btn-primary" type="submit">Save</button>
     {% if not txn %}<button class="btn btn-outline-primary" type="submit" name="save_add" value="1">Save &amp; add another</button>{% endif %}
-    <a class="btn btn-outline-secondary" href="{% url 'finance:personal_transaction_list' %}">Cancel</a>
+    <a class="btn btn-outline-secondary" href="{% if next_url %}{{ next_url }}{% else %}{% url 'finance:personal_transaction_list' %}{% endif %}">Cancel</a>
   </form>
 </div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+  (function () {
+    const row = document.querySelector("[data-card-row]");
+    const mode = document.getElementById("id_payment_mode");
+    const type = document.getElementById("id_entry_type");
+    if (!row || !mode || !type) return;
+    function sync() { row.style.display = mode.value === "card" && type.value === "debit" ? "" : "none"; }
+    mode.addEventListener("change", sync);
+    type.addEventListener("change", sync);
+    sync();
+  })();
+</script>
 {% endblock %}

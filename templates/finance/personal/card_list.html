@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% load money_tags %}
+
+{% block title %}Credit cards{% endblock %}
+{% block heading %}Credit cards{% endblock %}
+{% block subtitle %}Limits, bills and due dates · card spends count as personal expenses{% endblock %}
+{% block period %}{% endblock %}
+
+{% block content %}
+<div class="d-flex flex-wrap gap-2 mb-3">
+  <a class="btn btn-primary" href="{% url 'finance:personal_card_create' %}">Add credit card</a>
+</div>
+
+<div class="row g-3 mb-3">
+  <div class="col-md-6 col-xl-3">
+    <div class="card summary-card tile-expense p-3 h-100">
+      <div class="label">Total outstanding</div>
+      <div class="value accent-expense">{{ summary.total_outstanding|inr }}</div>
+      <div class="small text-secondary">{{ summary.count }} active card{{ summary.count|pluralize }}</div>
+    </div>
+  </div>
+  <div class="col-md-6 col-xl-3">
+    <div class="card summary-card tile-income p-3 h-100">
+      <div class="label">Available limit</div>
+      <div class="value accent-income">{{ summary.total_available|inr }}</div>
+      <div class="small text-secondary">of {{ summary.total_limit|inr }} total limit</div>
+    </div>
+  </div>
+  <div class="col-md-6 col-xl-3">
+    <div class="card summary-card tile-balance p-3 h-100">
+      <div class="label">Bills to pay</div>
+      <div class="value">{{ summary.total_due|inr }}</div>
+      <div class="small text-secondary">{{ summary.attention|length }} bill{{ summary.attention|length|pluralize }} pending</div>
+    </div>
+  </div>
+  <div class="col-md-6 col-xl-3">
+    <div class="card summary-card {% if summary.overdue_count %}tile-negative{% else %}tile-balance{% endif %} p-3 h-100">
+      <div class="label">Overdue bills</div>
+      <div class="value {% if summary.overdue_count %}accent-warn{% endif %}">{{ summary.overdue_count }}</div>
+    </div>
+  </div>
+</div>
+
+<div class="card card-soft p-3">
+  <div class="table-responsive">
+    <table class="table align-middle">
+      <thead>
+        <tr>
+          <th>Card</th>
+          <th class="text-end">Limit</th>
+          <th class="text-end">Outstanding</th>
+          <th class="text-end">Available</th>
+          <th style="min-width: 140px;">Limit used</th>
+          <th>Bill / due</th>
+          <th class="text-end">Bill amount due</th>
+          <th>Status</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for s in statuses %}
+        <tr {% if not s.card.is_active %}class="text-secondary"{% endif %}>
+          <td>
+            <a href="{% url 'finance:personal_card_detail' s.card.pk %}">{{ s.card.name }}</a>
+            {% if s.card.last_four %}<small class="text-secondary">••{{ s.card.last_four }}</small>{% endif %}
+            {% if s.card.issuer %}<br><small class="text-secondary">{{ s.card.issuer }}</small>{% endif %}
+            {% if not s.card.is_active %}<span class="badge bg-light text-dark">Inactive</span>{% endif %}
+          </td>
+          <td class="text-end">{{ s.card.credit_limit|inr }}</td>
+          <td class="text-end fw-semibold">{{ s.outstanding|inr }}</td>
+          <td class="text-end {% if s.available < 0 %}accent-warn{% endif %}">{{ s.available|inr }}</td>
+          <td>
+            <div class="progress" style="height: 8px;" role="progressbar" aria-label="Limit used" aria-valuenow="{{ s.utilization_bar }}" aria-valuemin="0" aria-valuemax="100">
+              <div class="progress-bar {% if s.limit_state == 'Over limit' %}bg-danger{% elif s.limit_state == 'Near limit' %}bg-warning{% else %}bg-success{% endif %}" style="width: {{ s.utilization_bar|stringformat:'s' }}%"></div>
+            </div>
+            <small>{{ s.utilization }}%</small>{% if s.limit_state != "Within limit" %} <span class="badge {{ s.limit_state|emi_badge }}">{{ s.limit_state }}</span>{% endif %}
+          </td>
+          <td class="small">Bill day {{ s.card.bill_day }} · due day {{ s.card.due_day }}{% if s.due_date %}<br>Next payment by {{ s.due_date }}{% endif %}</td>
+          <td class="text-end">{{ s.amount_due|inr }}</td>
+          <td><span class="badge {{ s.due_state|emi_badge }}">{{ s.due_state }}</span></td>
+          <td class="text-end text-nowrap">
+            <a class="btn btn-sm btn-primary" href="{% url 'finance:personal_card_txn_create' s.card.pk %}">Add spend</a>
+            <a class="btn btn-sm btn-outline-primary" href="{% url 'finance:personal_card_txn_create' s.card.pk %}?kind=payment">Pay bill</a>
+          </td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="9" class="text-secondary">No credit cards yet. Add one to start tracking its limit and bills.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

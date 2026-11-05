@@ -87,6 +87,40 @@
   </div>
 </div>
 
+{% if cards.count %}
+<div class="card card-soft p-3 mb-3">
+  <div class="d-flex justify-content-between align-items-center mb-2">
+    <h2 class="h5 mb-0">Credit cards</h2>
+    <a class="btn btn-sm btn-outline-primary" href="{% url 'finance:personal_card_list' %}">All cards</a>
+  </div>
+  <div class="d-flex flex-wrap gap-4 mb-2">
+    <span>Outstanding: <strong class="accent-expense">{{ cards.total_outstanding|inr }}</strong></span>
+    <span>Available: <strong class="accent-income">{{ cards.total_available|inr }}</strong> of {{ cards.total_limit|inr }}</span>
+    {% if cards.total_due %}<span>Bills to pay: <strong>{{ cards.total_due|inr }}</strong></span>{% endif %}
+  </div>
+  {% if cards.attention %}
+  <div class="table-responsive">
+    <table class="table align-middle mb-0">
+      <thead><tr><th>Card</th><th>Bill date</th><th>Due date</th><th class="text-end">Amount due</th><th>Status</th></tr></thead>
+      <tbody>
+        {% for s in cards.attention %}
+        <tr>
+          <td><a href="{% url 'finance:personal_card_detail' s.card.pk %}">{{ s.card.name }}</a></td>
+          <td>{{ s.last_statement }}</td>
+          <td>{{ s.due_date }}</td>
+          <td class="text-end">{{ s.amount_due|inr }}</td>
+          <td><span class="badge {{ s.due_state|emi_badge }}">{{ s.due_state }}</span></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="text-secondary mb-0">No card bills pending.</p>
+  {% endif %}
+</div>
+{% endif %}
+
 <div class="card card-soft p-3 mb-3">
   <div class="d-flex justify-content-between align-items-center mb-2">
     <h2 class="h5 mb-0">Money lent &amp; borrowed</h2>
@@ -148,7 +182,7 @@
           <td>{{ txn.date }}</td>
           <td><a href="{% url 'finance:personal_transaction_edit' txn.pk %}">{{ txn.description }}</a></td>
           <td>{{ txn.category.name }}</td>
-          <td>{{ txn.get_payment_mode_display }}</td>
+          <td>{{ txn.get_payment_mode_display }}{% if txn.credit_card %} <small class="text-secondary">({{ txn.credit_card.name }})</small>{% endif %}</td>
           <td class="text-end {% if txn.entry_type == 'credit' %}accent-income{% endif %}">{% if txn.entry_type == "debit" %}-{% else %}+{% endif %}{{ txn.amount|inr }}</td>
         </tr>
         {% empty %}

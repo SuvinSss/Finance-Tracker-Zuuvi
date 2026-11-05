@@ -1,8 +1,9 @@
+import calendar
 from datetime import date
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError
-from django.core.validators import FileExtensionValidator, MaxValueValidator, MinValueValidator
+from django.core.validators import FileExtensionValidator, MaxValueValidator, MinValueValidator, RegexValidator
 from django.db import models
 from django.db.models import Q
 
@@ -330,6 +331,98 @@ class PersonalCategory(models.Model):
         return self.transactions.exists()
 
 
+def _day_in_month(year: int, month: int, day: int) -> date:
+    """`day` of the given month, clamped to the month's last day (e.g. 31 → 28/29 in February)."""
+    return date(year, month, min(day, calendar.monthrange(year, month)[1]))
+
+
+def _add_months(year: int, month: int, delta: int) -> tuple[int, int]:
+    index = year * 12 + (month - 1) + delta
+    return index // 12, index % 12 + 1
+
+
+class CreditCard(models.Model):
+    """Owner's personal credit card. Spends are PersonalTransactions; payments/refunds are CreditCardEntries."""
+
+    name = models.CharField(max_length=100, unique=True, help_text="For example: HDFC Millennia")
+    issuer = models.CharField(max_length=100, blank=True, verbose_name="Bank / issuer")
+    last_four = models.CharField(
+        max_length=4,
+        blank=True,
+        verbose_name="Last 4 digits",
+        validators=[RegexValidator(r"^\d{4}$", "Enter exactly 4 digits.")],
+        help_text="Optional. Never store the full card number, CVV, or PIN.",
+    )
+    credit_limit = models.DecimalField(
+        max_digits=14,
+        decimal_places=2,
+        validators=[MinValueValidator(Decimal("0.01"))],
+    )
+    bill_day = models.PositiveSmallIntegerField(
+        verbose_name="Bill (statement) day",
+        validators=[MinValueValidator(1), MaxValueValidator(31)],
+        help_text="Day of the month the bill is generated (1–31; 31 means the last day of the month).",
+    )
+    due_day = models.PositiveSmallIntegerField(
+        verbose_name="Payment due day",
+        validators=[MinValueValidator(1), MaxValueValidator(31)],
+        help_text="Day of the month the bill must be paid. If it's on or before the bill day, it's in the following month.",
+    )
+    opening_balance = models.DecimalField(
+        max_digits=14,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        validators=[MinValueValidator(Decimal("0.00"))],
+        verbose_name="Opening outstanding",
+        help_text="Amount already owed on the card on the opening date. Use 0 for a new or fully paid card.",
+    )
+    opening_balance_date = models.DateField(
+        verbose_name="Opening date",
+        help_text=(
+            "Card transactions start from this date. Tip: use your last bill date and that bill's "
+            "outstanding so its due amount is tracked."
+        ),
+    )
+    notes = models.TextField(blank=True)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-is_active", "name"]
+        constraints = [
+            models.CheckConstraint(condition=Q(credit_limit__gt=0), name="credit_card_limit_positive"),
+            models.CheckConstraint(condition=Q(bill_day__gte=1, bill_day__lte=31), name="credit_card_bill_day_valid"),
+            models.CheckConstraint(condition=Q(due_day__gte=1, due_day__lte=31), name="credit_card_due_day_valid"),
+            models.CheckConstraint(condition=Q(opening_balance__gte=0), name="credit_card_opening_non_negative"),
+        ]
+
+    def __str__(self):
+        return f"{self.name} ••{self.last_four}" if self.last_four else self.name
+
+    def statement_date(self, year: int, month: int) -> date:
+        return _day_in_month(year, month, self.bill_day)
+
+    def due_date_for(self, statement: date) -> date:
+        if self.due_day > self.bill_day:
+            return _day_in_month(statement.year, statement.month, self.due_day)
+        year, month = _add_months(statement.year, statement.month, 1)
+        return _day_in_month(year, month, self.due_day)
+
+    def last_statement_date(self, today: date) -> date:
+        """Most recent bill date on or before `today`."""
+        current = self.statement_date(today.year, today.month)
+        if current <= today:
+            return current
+        return self.statement_date(*_add_months(today.year, today.month, -1))
+
+    def next_statement_date(self, after: date) -> date:
+        return self.statement_date(*_add_months(after.year, after.month, 1))
+
+    def is_in_use(self):
+        return self.spends.exists() or self.entries.exists()
+
+
 class PersonalTransaction(models.Model):
     """Owner's personal income/expense entry. Kept apart from company accounts, budgets and reports."""
 
@@ -360,6 +453,14 @@ class PersonalTransaction(models.Model):
         related_name="transactions",
     )
     payment_mode = models.CharField(max_length=10, choices=PAYMENT_MODE_CHOICES, default=UPI)
+    credit_card = models.ForeignKey(
+        CreditCard,
+        on_delete=models.PROTECT,
+        related_name="spends",
+        null=True,
+        blank=True,
+        help_text="Only for expenses paid by credit card. The spend counts against this card's limit.",
+    )
     description = models.CharField(max_length=255)
     notes = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -369,6 +470,11 @@ class PersonalTransaction(models.Model):
         ordering = ["-date", "-id"]
         constraints = [
             models.CheckConstraint(condition=Q(amount__gt=0), name="personal_txn_amount_positive"),
+            models.CheckConstraint(
+                condition=Q(credit_card__isnull=True) | Q(entry_type="debit", payment_mode="card"),
+                name="personal_txn_credit_card_is_card_expense",
+                violation_error_message="Only card expenses can be linked to a credit card.",
+            ),
         ]
 
     def __str__(self):
@@ -384,6 +490,39 @@ class PersonalTransaction(models.Model):
             raise ValidationError({"category": "Expenses must use an expense category."})
         if self.entry_type == Transaction.CREDIT and category.category_type != Category.INCOME:
             raise ValidationError({"category": "Income must use an income category."})
+
+
+class CreditCardEntry(models.Model):
+    """A bill payment or refund/cashback on a credit card. Frees up limit; not counted as income or expense."""
+
+    PAYMENT = "payment"
+    REFUND = "refund"
+    KIND_CHOICES = [
+        (PAYMENT, "Bill payment"),
+        (REFUND, "Refund / cashback"),
+    ]
+
+    card = models.ForeignKey(CreditCard, on_delete=models.CASCADE, related_name="entries")
+    kind = models.CharField(max_length=10, choices=KIND_CHOICES, default=PAYMENT)
+    date = models.DateField()
+    amount = models.DecimalField(
+        max_digits=14,
+        decimal_places=2,
+        validators=[MinValueValidator(Decimal("0.01"))],
+    )
+    description = models.CharField(max_length=255, blank=True)
+    notes = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-date", "-id"]
+        verbose_name_plural = "Credit card entries"
+        constraints = [
+            models.CheckConstraint(condition=Q(amount__gt=0), name="credit_card_entry_amount_positive"),
+        ]
+
+    def __str__(self):
+        return f"{self.date} {self.get_kind_display()} {self.amount} ({self.card.name})"
 
 
 class PersonalDebt(models.Model):
