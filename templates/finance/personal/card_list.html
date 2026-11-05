@@ -75,7 +75,7 @@
             </div>
             <small>{{ s.utilization }}%</small>{% if s.limit_state != "Within limit" %} <span class="badge {{ s.limit_state|emi_badge }}">{{ s.limit_state }}</span>{% endif %}
           </td>
-          <td class="small">Bill day {{ s.card.bill_day }} · due day {{ s.card.due_day }}{% if s.due_date %}<br>Next payment by {{ s.due_date }}{% endif %}</td>
+          <td class="small">Bill: {{ s.card.bill_day_label }} · due: {{ s.card.due_day_label }}{% if s.due_date %}<br>Next payment by {{ s.due_date }}{% endif %}</td>
           <td class="text-end">{{ s.amount_due|inr }}</td>
           <td><span class="badge {{ s.due_state|emi_badge }}">{{ s.due_state }}</span></td>
           <td class="text-end text-nowrap">

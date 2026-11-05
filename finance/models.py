@@ -361,7 +361,7 @@ class CreditCard(models.Model):
     bill_day = models.PositiveSmallIntegerField(
         verbose_name="Bill (statement) day",
         validators=[MinValueValidator(1), MaxValueValidator(31)],
-        help_text="Day of the month the bill is generated (1–31; 31 means the last day of the month).",
+        help_text="Day of the month the bill is generated. Enter 31 for the last day of the month.",
     )
     due_day = models.PositiveSmallIntegerField(
         verbose_name="Payment due day",
@@ -379,7 +379,8 @@ class CreditCard(models.Model):
     opening_balance_date = models.DateField(
         verbose_name="Opening date",
         help_text=(
-            "Card transactions start from this date. Tip: use your last bill date and that bill's "
+            "Card transactions start from this date. If opening outstanding is 0, it moves back automatically "
+            "when you add an earlier transaction. Otherwise, use your last bill date and that bill's "
             "outstanding so its due amount is tracked."
         ),
     )
@@ -399,6 +400,19 @@ class CreditCard(models.Model):
 
     def __str__(self):
         return f"{self.name} ••{self.last_four}" if self.last_four else self.name
+
+    @staticmethod
+    def _day_label(day: int) -> str:
+        return "last day of month" if day == 31 else f"day {day}"
+
+    @property
+    def bill_day_label(self) -> str:
+        return self._day_label(self.bill_day)
+
+    @property
+    def due_day_label(self) -> str:
+        label = self._day_label(self.due_day)
+        return f"{label} of next month" if self.due_day <= self.bill_day and self.due_day != 31 else label
 
     def statement_date(self, year: int, month: int) -> date:
         return _day_in_month(year, month, self.bill_day)
@@ -421,6 +435,17 @@ class CreditCard(models.Model):
 
     def is_in_use(self):
         return self.spends.exists() or self.entries.exists()
+
+    @property
+    def accepts_earlier_dates(self) -> bool:
+        """With no opening outstanding, the opening date can move back freely without changing any balance."""
+        return self.opening_balance == 0
+
+    def include_date(self, txn_date: date) -> None:
+        """Move the opening date back so a back-dated transaction is counted (only when that's safe)."""
+        if txn_date and txn_date < self.opening_balance_date and self.accepts_earlier_dates:
+            self.opening_balance_date = txn_date
+            self.save(update_fields=["opening_balance_date", "updated_at"])
 
 
 class PersonalTransaction(models.Model):

@@ -3,7 +3,7 @@
 
 {% block title %}{{ card.name }}{% endblock %}
 {% block heading %}{{ card.name }}{% if card.last_four %} <small class="text-secondary">••{{ card.last_four }}</small>{% endif %}{% endblock %}
-{% block subtitle %}{% if card.issuer %}{{ card.issuer }} · {% endif %}limit {{ card.credit_limit|inr }} · bill on day {{ card.bill_day }} · due on day {{ card.due_day }}{% if not card.is_active %} · inactive{% endif %}{% endblock %}
+{% block subtitle %}{% if card.issuer %}{{ card.issuer }} · {% endif %}limit {{ card.credit_limit|inr }} · bill on {{ card.bill_day_label }} · due on {{ card.due_day_label }}{% if not card.is_active %} · inactive{% endif %}{% endblock %}
 {% block period %}{% endblock %}
 
 {% block content %}

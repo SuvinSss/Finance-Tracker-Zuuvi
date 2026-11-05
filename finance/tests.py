@@ -1079,11 +1079,9 @@ class CreditCardTests(FinanceBaseTestCase):
         self.assertEqual(card.entries.count(), 2)
         self.assertEqual(card_balance(card), Decimal("400.00"))
 
-        # Spend without category is rejected; date before opening is rejected.
+        # Spend without category is rejected.
         response = self.client.post(url, {"kind": "spend", "date": "2026-10-05", "amount": "10", "description": "x"})
         self.assertContains(response, "Pick an expense category")
-        response = self.client.post(url, {"kind": "payment", "date": "2026-09-05", "amount": "10"})
-        self.assertContains(response, "opening date")
 
         for name in ["personal_card_list", "personal_dashboard"]:
             page = self.client.get(reverse(f"finance:{name}"))
@@ -1129,3 +1127,54 @@ class CreditCardTests(FinanceBaseTestCase):
             reverse("finance:personal_transaction_delete", args=[spend.pk]), {"next": "https://evil.example/"}
         )
         self.assertRedirects(response, reverse("finance:personal_transaction_list"))
+
+    def test_back_dated_entries_move_zero_opening_date(self):
+        self.card.opening_balance_date = date(2026, 11, 1)
+        self.card.save()
+        url = reverse("finance:personal_card_txn_create", args=[self.card.pk])
+        response = self.client.post(url, {"kind": "spend", "date": "2026-10-05", "amount": "2500",
+                                          "category": self.p_shopping.pk, "description": "October shopping"})
+        self.assertRedirects(response, reverse("finance:personal_card_detail", args=[self.card.pk]))
+        self.card.refresh_from_db()
+        self.assertEqual(self.card.opening_balance_date, date(2026, 10, 5))
+        self.assertEqual(card_balance(self.card), Decimal("2500.00"))
+
+        # Same through the personal entry form and the payment entry edit form.
+        self.client.post(
+            reverse("finance:personal_transaction_create"),
+            {"date": "2026-10-02", "entry_type": "debit", "amount": "500", "category": self.p_shopping.pk,
+             "payment_mode": "card", "credit_card": self.card.pk, "description": "Fuel"},
+        )
+        entry = self.entry("100", date(2026, 10, 20))
+        self.client.post(reverse("finance:personal_card_entry_edit", args=[entry.pk]),
+                         {"kind": "payment", "date": "2026-10-01", "amount": "100"})
+        self.card.refresh_from_db()
+        self.assertEqual(self.card.opening_balance_date, date(2026, 10, 1))
+        self.assertEqual(card_balance(self.card), Decimal("2900.00"))
+
+    def test_back_dated_entry_rejected_when_opening_outstanding(self):
+        self.card.opening_balance = Decimal("5000.00")
+        self.card.opening_balance_date = date(2026, 11, 1)
+        self.card.save()
+        url = reverse("finance:personal_card_txn_create", args=[self.card.pk])
+        response = self.client.post(url, {"kind": "payment", "date": "2026-10-05", "amount": "10"})
+        self.assertContains(response, "move its opening date")
+        self.card.refresh_from_db()
+        self.assertEqual(self.card.opening_balance_date, date(2026, 11, 1))
+        self.assertFalse(self.card.entries.exists())
+
+    def test_month_end_bill_day(self):
+        self.card.bill_day, self.card.due_day = 31, 21
+        self.card.save()
+        self.assertEqual(self.card.bill_day_label, "last day of month")
+        self.assertEqual(self.card.due_day_label, "day 21 of next month")
+        self.spend("1500", date(2026, 10, 1))
+        self.spend("400", date(2026, 11, 2))
+        status = card_status(self.card, date(2026, 11, 5), threshold=90)
+        self.assertEqual(status["last_statement"], date(2026, 10, 31))
+        self.assertEqual(status["due_date"], date(2026, 11, 21))
+        self.assertEqual(status["amount_due"], Decimal("1500.00"))
+        self.assertEqual(status["due_state"], EMI_DUE)
+        self.assertEqual(status["unbilled"], Decimal("400.00"))
+        page = self.client.get(reverse("finance:personal_card_list"))
+        self.assertContains(page, "last day of month")

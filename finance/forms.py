@@ -19,6 +19,7 @@ from .models import (
     PersonalTransaction,
     Transaction,
 )
+from .money import format_inr
 from .period import MONTH_CHOICES
 
 
@@ -373,10 +374,12 @@ class PersonalCategoryForm(forms.ModelForm):
 
 
 def _check_card_date(card, txn_date):
-    if card and txn_date and txn_date < card.opening_balance_date:
+    """Earlier dates are fine when the card has no opening outstanding (the opening date just moves back)."""
+    if card and txn_date and txn_date < card.opening_balance_date and not card.accepts_earlier_dates:
         return (
-            f"This card's transactions start on {card.opening_balance_date:%d %b %Y} (its opening date). "
-            "Use a later date or change the card's opening date."
+            f"{card.name} was set up with {format_inr(card.opening_balance)} outstanding as of "
+            f"{card.opening_balance_date:%d %b %Y}, so earlier spends are assumed to be included in that amount. "
+            "To add earlier transactions, edit the card and move its opening date (and outstanding) back."
         )
     return None
 
@@ -432,6 +435,12 @@ class PersonalTransactionForm(forms.ModelForm):
             elif error := _check_card_date(card, cleaned.get("date")):
                 self.add_error("date", error)
         return cleaned
+
+    def save(self, commit=True):
+        txn = super().save(commit=commit)
+        if commit and txn.credit_card_id:
+            txn.credit_card.include_date(txn.date)
+        return txn
 
 
 class CreditCardForm(forms.ModelForm):
@@ -546,6 +555,7 @@ class CreditCardTransactionForm(forms.Form):
 
     def save(self):
         data = self.cleaned_data
+        self.card.include_date(data["date"])
         if data["kind"] == self.SPEND:
             return PersonalTransaction.objects.create(
                 date=data["date"],
@@ -591,6 +601,12 @@ class CreditCardEntryForm(forms.ModelForm):
         if error := _check_card_date(self.instance.card, cleaned.get("date")):
             self.add_error("date", error)
         return cleaned
+
+    def save(self, commit=True):
+        entry = super().save(commit=commit)
+        if commit:
+            entry.card.include_date(entry.date)
+        return entry
 
 
 EMI_FIELDS = ["installment_amount", "installment_day", "first_installment_month", "tenure_months"]
