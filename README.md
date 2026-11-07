@@ -45,6 +45,23 @@ Additional staff users can be added later from Django Admin (`/admin/`) using th
 python manage.py test finance
 ```
 
+## Deploying (Railway)
+
+Production runs on Railway with Postgres. Every push to `main` deploys automatically: Railway builds the app, runs `migrate` as a pre-deploy step, then `collectstatic` and gunicorn (see `railway.json`). If migrations fail, the old version keeps running.
+
+Environment variables on the app service:
+
+| Variable | Value |
+| --- | --- |
+| `DATABASE_URL` | `${{Postgres.DATABASE_URL}}` |
+| `DJANGO_SECRET_KEY` | long random string |
+| `DJANGO_ALLOWED_HOSTS` | extra hostnames, comma-separated (the Railway domain is added automatically) |
+| `MEDIA_ROOT` | `/app/media` (a Railway volume, so receipts survive redeploys) |
+
+Locally nothing is needed: without `DATABASE_URL` the app uses `db.sqlite3`, and `DEBUG` is on unless running on Railway.
+
+Git workflow: work on a `feature/<name>` branch, run the tests, then merge into `main` to release. To roll back, redeploy an earlier deployment in Railway or `git revert` and push.
+
 ## Business rules
 
 1. Budgets apply to **expense** categories for a calendar month and year. Only one budget per category per month.
