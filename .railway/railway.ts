@@ -4,7 +4,9 @@ import { defineRailway, github, postgres, preserve, project, service, volume } f
 const REGION = "sin";
 const REPO = "SuvinSss/Finance-Tracker-Zuuvi";
 
-// Sized for Railway's Free plan ($1 credit/month, 0.5 GB volumes): both services sleep when idle.
+// Sized for Railway's Free plan ($1 credit/month): both services sleep when idle.
+// Free plan caps every volume at 0.5 GB; postgres-volume keeps its original size setting
+// because Railway volumes cannot be shrunk.
 export default defineRailway(() => {
   const Postgres = postgres("Postgres", { region: REGION });
   Postgres.networking = { privateNetworkEndpoint: "postgres" };
@@ -13,7 +15,7 @@ export default defineRailway(() => {
     alerts: { usage: { "100": {}, "80": {}, "95": {} } },
     allowOnlineResize: true,
     region: REGION,
-    sizeMB: 500,
+    sizeMB: 5000,
   });
 
   const web = service("web", {
