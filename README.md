@@ -47,7 +47,7 @@ python manage.py test finance
 
 ## Deploying (Railway)
 
-Production runs on Railway with Postgres. Every push to `main` deploys automatically: Railway builds the app, runs `migrate` as a pre-deploy step, then `collectstatic` and gunicorn (see `railway.json`). If migrations fail, the old version keeps running.
+Production runs on Railway with Postgres. Every push to `main` deploys automatically: Railway builds the app, runs `migrate` as a pre-deploy step, then `collectstatic` and gunicorn (see `.railway/railway.ts`; preview changes with `railway config plan`, apply with `railway config apply`). If migrations fail, the old version keeps running.
 
 Environment variables on the app service:
 
