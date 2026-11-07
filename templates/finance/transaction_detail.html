@@ -9,7 +9,7 @@
   <dl class="row mb-0">
     <dt class="col-sm-4">Date</dt><dd class="col-sm-8">{{ txn.date }}</dd>
     <dt class="col-sm-4">Type</dt><dd class="col-sm-8">{{ txn.get_entry_type_display }}</dd>
-    <dt class="col-sm-4">Amount</dt><dd class="col-sm-8">{{ txn.amount|inr }}</dd>
+    <dt class="col-sm-4">Amount</dt><dd class="col-sm-8">{% if txn.entry_type == "debit" %}-{% endif %}{{ txn.amount|inr }}</dd>
     <dt class="col-sm-4">Category</dt><dd class="col-sm-8">{% if txn.kind == "transfer" %}Internal transfer{% else %}{{ txn.category }}{% endif %}</dd>
     {% if txn.loan %}<dt class="col-sm-4">EMI for</dt><dd class="col-sm-8"><a href="{% url 'finance:loan_detail' txn.loan.pk %}">{{ txn.loan }}</a> – {{ txn.emi_month|date:"F Y" }}</dd>{% endif %}
     <dt class="col-sm-4">Account</dt><dd class="col-sm-8">{{ txn.account }}</dd>

@@ -9,7 +9,7 @@
 <div class="row g-3 mb-3">
   <div class="col-md-3"><div class="card summary-card p-3"><div class="label">Opening balance</div><div class="value">{{ movement.opening_balance|inr }}</div><div class="small text-secondary">From {{ account.opening_balance_date }}</div></div></div>
   <div class="col-md-3"><div class="card summary-card p-3"><div class="label">Credits</div><div class="value accent-income">{{ movement.total_credits|inr }}</div></div></div>
-  <div class="col-md-3"><div class="card summary-card p-3"><div class="label">Debits</div><div class="value accent-expense">{{ movement.total_debits|inr }}</div></div></div>
+  <div class="col-md-3"><div class="card summary-card p-3"><div class="label">Debits</div><div class="value accent-expense">{% if movement.total_debits %}-{% endif %}{{ movement.total_debits|inr }}</div></div></div>
   <div class="col-md-3"><div class="card summary-card p-3"><div class="label">Current balance</div><div class="value">{{ movement.current_balance|inr }}</div></div></div>
 </div>
 <p class="text-secondary">{{ account.notes }}</p>
@@ -26,7 +26,7 @@
           <td>{{ txn.date }}</td>
           <td>{{ txn.get_entry_type_display }}</td>
           <td><a href="{% url 'finance:transaction_detail' txn.pk %}">{{ txn.description }}</a></td>
-          <td class="text-end">{{ txn.amount|inr }}</td>
+          <td class="text-end">{% if txn.entry_type == "debit" %}-{% endif %}{{ txn.amount|inr }}</td>
         </tr>
         {% empty %}
         <tr><td colspan="4" class="text-secondary">No transactions on this account.</td></tr>

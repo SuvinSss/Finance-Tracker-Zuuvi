@@ -96,7 +96,7 @@
           <td>{% if txn.kind == "transfer" %}<span class="badge text-bg-secondary">Transfer</span>{% else %}{{ txn.category }}{% endif %}</td>
           <td>{{ txn.account }}</td>
           <td>{{ txn.reference_number|default:"—" }}</td>
-          <td class="text-end">{{ txn.amount|inr }}</td>
+          <td class="text-end">{% if txn.entry_type == "debit" %}-{% endif %}{{ txn.amount|inr }}</td>
           <td class="text-end text-nowrap">
             <a class="btn btn-sm btn-outline-secondary" href="{% url 'finance:transaction_edit' txn.pk %}">Edit</a>
             <a class="btn btn-sm btn-outline-danger" href="{% url 'finance:transaction_delete' txn.pk %}">Delete</a>

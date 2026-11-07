@@ -38,7 +38,7 @@
           <td>{{ item.account.bank_name|default:"—" }}</td>
           <td class="text-end">{{ item.opening_balance|inr }}</td>
           <td class="text-end">{{ item.total_credits|inr }}</td>
-          <td class="text-end">{{ item.total_debits|inr }}</td>
+          <td class="text-end">{% if item.total_debits %}-{% endif %}{{ item.total_debits|inr }}</td>
           <td class="text-end fw-semibold">{{ item.current_balance|inr }}</td>
           <td>{% if item.account.is_active %}Active{% else %}Inactive{% endif %}</td>
           <td class="text-end">
