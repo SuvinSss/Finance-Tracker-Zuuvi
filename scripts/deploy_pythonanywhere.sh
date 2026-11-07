@@ -17,7 +17,10 @@ set +a
 export DJANGO_DEBUG=False
 export DJANGO_ALLOWED_HOSTS="${USER}.pythonanywhere.com"
 
-git pull --ff-only
+# Code from a git clone is updated here; code uploaded as a zip is replaced by re-uploading.
+if [ -d .git ]; then
+    git pull --ff-only
+fi
 pip install --quiet -r requirements.txt
 python manage.py migrate --noinput
 python manage.py collectstatic --noinput
