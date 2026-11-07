@@ -45,22 +45,25 @@ Additional staff users can be added later from Django Admin (`/admin/`) using th
 python manage.py test finance
 ```
 
-## Deploying (Railway)
+## Deploying (PythonAnywhere)
 
-Production runs on Railway with Postgres. Every push to `main` deploys automatically: Railway builds the app, runs `migrate` as a pre-deploy step, then `collectstatic` and gunicorn (see `.railway/railway.ts`; preview changes with `railway config plan`, apply with `railway config apply`). If migrations fail, the old version keeps running.
+Production runs on a free PythonAnywhere account (`https://<username>.pythonanywhere.com`) using SQLite on PythonAnywhere's disk. Uploaded receipts live in `media/` next to the database and are only served to signed-in users (do **not** add a public `/media/` static mapping).
 
-Environment variables on the app service:
+Production settings come from the WSGI file on PythonAnywhere, which loads `~/.zuuvi_env` (holds `DJANGO_SECRET_KEY`, never committed) and sets `DJANGO_DEBUG=False` and `DJANGO_ALLOWED_HOSTS`. "Force HTTPS" is switched on in the Web tab.
 
-| Variable | Value |
-| --- | --- |
-| `DATABASE_URL` | `${{Postgres.DATABASE_URL}}` |
-| `DJANGO_SECRET_KEY` | long random string |
-| `DJANGO_ALLOWED_HOSTS` | extra hostnames, comma-separated (the Railway domain is added automatically) |
-| `MEDIA_ROOT` | `/app/media` (a Railway volume, so receipts survive redeploys) |
+**Release an update:** push to `main` on GitHub, then in a PythonAnywhere Bash console run:
 
-Locally nothing is needed: without `DATABASE_URL` the app uses `db.sqlite3`, and `DEBUG` is on unless running on Railway.
+```bash
+bash ~/Finance-Tracker-Zuuvi/scripts/deploy_pythonanywhere.sh
+```
 
-Git workflow: work on a `feature/<name>` branch, run the tests, then merge into `main` to release. To roll back, redeploy an earlier deployment in Railway or `git revert` and push.
+It pulls the code, installs requirements, runs migrations and `collectstatic`, and reloads the site.
+
+**Every 3 months** (free plan): open the Web tab and click "Run until 3 months from today", or the site is paused.
+
+**Backups:** download `db.sqlite3` (and `media/`) from the Files tab now and then.
+
+Git workflow: work on a `feature/<name>` branch, run the tests, then merge into `main` and run the deploy script. To roll back, `git revert` the change, push, and deploy again.
 
 ## Business rules
 

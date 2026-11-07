@@ -8,22 +8,15 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "django-insecure-dev-only-change-me")
 
-# On Railway (RAILWAY_ENVIRONMENT_NAME is set) DEBUG defaults to off; locally it defaults to on.
-ON_RAILWAY = bool(os.environ.get("RAILWAY_ENVIRONMENT_NAME"))
-DEBUG = os.environ.get("DJANGO_DEBUG", "False" if ON_RAILWAY else "True") == "True"
+# DEBUG is on locally; production (PythonAnywhere WSGI file) sets DJANGO_DEBUG=False.
+DEBUG = os.environ.get("DJANGO_DEBUG", "True") == "True"
 
 if not DEBUG and SECRET_KEY.startswith("django-insecure"):
     raise RuntimeError("Set DJANGO_SECRET_KEY when DEBUG is off.")
 
 ALLOWED_HOSTS = ["127.0.0.1", "localhost"]
 ALLOWED_HOSTS += [h.strip() for h in os.environ.get("DJANGO_ALLOWED_HOSTS", "").split(",") if h.strip()]
-if os.environ.get("RAILWAY_PUBLIC_DOMAIN"):
-    ALLOWED_HOSTS.append(os.environ["RAILWAY_PUBLIC_DOMAIN"])
-if ON_RAILWAY:
-    ALLOWED_HOSTS.append("healthcheck.railway.app")  # Railway deploy healthcheck
-CSRF_TRUSTED_ORIGINS = [
-    f"https://{h}" for h in ALLOWED_HOSTS if h not in ("127.0.0.1", "localhost", "healthcheck.railway.app")
-]
+CSRF_TRUSTED_ORIGINS = [f"https://{h}" for h in ALLOWED_HOSTS if h not in ("127.0.0.1", "localhost")]
 
 INSTALLED_APPS = [
     "django.contrib.admin",
@@ -70,9 +63,7 @@ WSGI_APPLICATION = "config.wsgi.application"
 DATABASES = {
     "default": dj_database_url.config(
         default=f"sqlite:///{BASE_DIR / 'db.sqlite3'}",
-        # On Railway, close connections after each request so idle Postgres can sleep (Free plan).
-        conn_max_age=0 if ON_RAILWAY else 600,
-        conn_health_checks=True,
+        conn_max_age=600,
     )
 }
 
@@ -118,8 +109,7 @@ SESSION_EXPIRE_AT_BROWSER_CLOSE = False
 
 if not DEBUG:
     SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
-    SECURE_SSL_REDIRECT = True
-    SECURE_REDIRECT_EXEMPT = [r"^login/$"]  # Railway healthcheck hits /login/ over plain HTTP
+    # HTTP -> HTTPS redirect is done by PythonAnywhere's "Force HTTPS" setting.
     SESSION_COOKIE_SECURE = True
     CSRF_COOKIE_SECURE = True
     SECURE_HSTS_SECONDS = 60 * 60 * 24 * 30
